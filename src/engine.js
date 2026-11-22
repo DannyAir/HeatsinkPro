@@ -1,5 +1,5 @@
 /* ==========================================================================
-   QDPAK inverter heatsink study — physics engine  (rev r2)
+   QDPAK inverter heatsink study — physics engine  (rev r3)
    All internal units SI. cfg uses engineering units (mm, W, degC, CFM, Pa).
    ========================================================================== */
 (function (root) {
@@ -83,6 +83,8 @@ const FANS = {
 /* ---------------- helpers ---------------- */
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const fmtN = (v, d) => isFinite(v) ? v.toFixed(d) : '—';
+/* drive a generator to completion (synchronous use of the step-wise solvers) */
+function runGen(gen) { let r; while (!(r = gen.next()).done) { /* progress ignored */ } return r.value; }
 function bisect(fn, lo, hi, it = 64) { // fn(lo) and fn(hi) opposite sign; returns root
   let flo = fn(lo);
   for (let i = 0; i < it; i++) {
@@ -393,7 +395,7 @@ function flowWeights(cfg, g, ny) {
 }
 
 /* ---------------- 2-D base-plate conduction with air marching ---------------- */
-function solveMap(M) {
+function* solveMapGen(M) {
   const { nx, ny, L, W, kt, secs, natural: nat, Tin, wY, devs, cp, hubX } = M;
   const dx = L / nx, dy = W / ny, N = nx * ny;
   const aX = kt * dy / dx, aY = kt * dx / dy;
@@ -439,8 +441,8 @@ function solveMap(M) {
   const Gd = Gdc();
   if (!M.Tinit && Gd > 0) T.fill(Tin + Qin / Gd);
   const omega = M.omega || 2 / (1 + Math.sin(Math.PI / Math.max(nx, ny)));
-  let it = 0, maxd = 0, Qout = 0;
-  const maxIt = M.maxIt || 8000;
+  let it = 0, maxd = 0, Qout = 0, r0 = null;
+  const maxIt = M.maxIt || 8000, lr = Math.log;
   for (it = 0; it < maxIt; it++) {
     maxd = 0;
     for (let s = 0; s < secs.length; s++) {
@@ -462,6 +464,8 @@ function solveMap(M) {
         }
       }
     }
+    if (it === 0) r0 = Math.max(maxd, 1e-9);
+    if ((it & 15) === 15) yield { mapFrac: clamp(Math.max(lr(r0 / Math.max(maxd, 1e-12)) / lr(Math.max(r0 / 2e-5, 1.0001)), it / maxIt), 0, 0.99), it, maxd };
     if (it % 8 === 7 || maxd < 2e-5) {
       Qout = 0; for (let k = 0; k < N; k++) Qout += geff[k] * (T[k] - Tai[k]);
       const shift = Gd > 0 ? (Qin - Qout) / Gd : 0;
@@ -479,6 +483,7 @@ function solveMap(M) {
   return { T, Tao, nx, ny, dx, dy, devT, devCov, Tmax, Tmin, iters: it, maxd, Qin, Qout, balance: Qin > 0 ? (Qout - Qin) / Qin : 0,
     TairOutMax, TairOutAvg: mw > 0 ? TairOutAvg / mw : Tin };
 }
+function solveMap(M) { return runGen(solveMapGen(M)); }
 
 /* ---------------- transient: Jacobi eigen + Cauer->Foster ---------------- */
 function jacobiEig(Ain) {
@@ -512,7 +517,8 @@ function cauerToFoster(C, Gm, inp = 0, obs = 0) {
 const Zf = (terms, t) => t <= 0 ? 0 : terms.reduce((a, x) => a + x.R * (1 - Math.exp(-t / x.tau)), 0);
 
 /* ---------------- main compute ---------------- */
-function compute(cfg, opt = {}) {
+/* step-wise solver: yields { stage, p } progress (p = 0…1), returns the result object */
+function* computeGen(cfg, opt = {}) {
   const warn = [], note = (lvl, msg) => warn.push({ lvl, msg });
   const g = geometry(cfg);
   if (!g.valid) note('bad', g.why);
@@ -524,6 +530,7 @@ function compute(cfg, opt = {}) {
   if (!g.valid) { R.invalid = true; return R; }
 
   /* ---- flow + convection ---- */
+  yield { stage: 'Fan–system operating point', p: 0.02 };
   let ht, op = null, Am, Af, natRes = null, dTair = 0;
   if (!nat) {
     for (let pass = 0; pass < 3; pass++) {
@@ -545,6 +552,7 @@ function compute(cfg, opt = {}) {
   }
 
   /* ---- device stack (analytic, average device) ---- */
+  yield { stage: 'Device stack, TIM and spreading', p: 0.12 };
   const Apad = (cfg.padL * cfg.padW) / 1e6, Acell = g.L * g.W / Ndev, kb = g.mb.k;
   const tim = timStack(cfg, Apad); R.tim = tim;
   const Rjc = cfg.Rjc, Rtim = tim.R;
@@ -558,6 +566,7 @@ function compute(cfg, opt = {}) {
   R.TjAvg = Tin + PdevX * RjaAvg;
 
   /* ---- 2-D base map (hot device) ---- */
+  yield { stage: '2-D base-plate thermal map', p: 0.16 };
   const gridN = { coarse: 30, medium: 60, fine: 96 }[opt.grid || cfg.grid] || 60;
   const asp = g.L / g.W, nx = Math.max(8, Math.round(asp >= 1 ? gridN : gridN * asp)), ny = Math.max(8, Math.round(asp >= 1 ? gridN / asp : gridN));
   const wY = flowWeights(cfg, g, ny);
@@ -567,8 +576,12 @@ function compute(cfg, opt = {}) {
   const Av = d => (d.ax + g.tb / 2) * (d.ay + g.tb / 2);
   devs.forEach(d => { d.P = PdevX * d.fac; d.Rv = (g.tb / 2) / (kb * Av(d)); d.Ptop = d.P * R.stack.topFrac; });
   let map = null;
-  for (let pass = 0; pass < (cfg.pcbOn ? 4 : 1); pass++) {
-    map = solveMap({ nx, ny, L: g.L, W: g.W, kt: kb * g.tb, secs: secsMap, natural: nat, Tin, wY, devs, cp: Am.cp, hubX, Tinit: map ? map.T : null });
+  const passes = cfg.pcbOn ? 4 : 1;
+  for (let pass = 0; pass < passes; pass++) {
+    const gm = solveMapGen({ nx, ny, L: g.L, W: g.W, kt: kb * g.tb, secs: secsMap, natural: nat, Tin, wY, devs, cp: Am.cp, hubX, Tinit: map ? map.T : null });
+    let st;
+    while (!(st = gm.next()).done) yield { stage: `2-D base-plate thermal map${passes > 1 ? ` (PCB pass ${pass + 1}/${passes})` : ''} · sweep ${st.value.it + 1}`, p: 0.16 + 0.64 * (pass + st.value.mapFrac) / passes };
+    map = st.value;
     devs.forEach((d, n) => {
       d.Tbase = map.devT[n]; d.Tcase = d.Tbase + d.Ptop * (d.Rv + Rtim);
       if (cfg.pcbOn) { const Ppcb = clamp((d.Tcase - Tin) / Rpcb, 0, d.P); d.Ptop = d.P - Ppcb; d.Ppcb = Ppcb; } else d.Ppcb = 0;
@@ -585,6 +598,7 @@ function compute(cfg, opt = {}) {
   }
 
   /* ---- transient network (average device share) ---- */
+  yield { stage: 'Transient network (Cauer → Foster)', p: 0.82 };
   const ccase = Math.max(cfg.Ccase, 1e-3);
   const AvAvg = Av(devs[0]);
   const C1 = g.mb.rho * g.mb.cp * Math.min(AvAvg, Acell) * g.tb;
@@ -616,6 +630,7 @@ function compute(cfg, opt = {}) {
     tauHs: R.Rsa * g.Chs, ZjcSS: Rjc, Ccells: { C0: ccase, C1, C2, C3 } };
 
   /* ---- fan failure (forced -> natural) ---- */
+  yield { stage: 'Fan failure, isolation and design checks', p: 0.92 };
   if (!nat) {
     const nr = natural(cfg, g, Tin, cfg.Px);
     const Ths0 = Tin + cfg.Px * R.Rsa, Tnat = Tin + cfg.Px * nr.R, off = Tss - Ths0, tau = nr.R * g.Chs;
@@ -668,6 +683,8 @@ function compute(cfg, opt = {}) {
   return R;
 }
 
+function compute(cfg, opt = {}) { return runGen(computeGen(cfg, opt)); }
+
 /* quick evaluation for sweeps */
 function evalPoint(cfg) {
   const R = compute(cfg, { grid: 'coarse' });
@@ -685,7 +702,7 @@ function losses(h, perLeg, nLegs) {
 }
 
 const API = { air, geometry, core, bypassDP, fanDP, fanQfree, systemAt, operatingPoint, heatTransfer, finEff, natural,
-  leeSpreading, devices, nParOf, timStack, altFactor, flowWeights, solveMap, jacobiEig, cauerToFoster, Zf, compute, evalPoint, losses,
+  leeSpreading, devices, nParOf, timStack, altFactor, flowWeights, solveMap, solveMapGen, computeGen, runGen, jacobiEig, cauerToFoster, Zf, compute, evalPoint, losses,
   MATERIALS, TIMS, ISOS, FANS, CFM, RHO_REF, SIGMA };
 if (typeof module !== 'undefined' && module.exports) module.exports = API; else root.HS = API;
 })(this);

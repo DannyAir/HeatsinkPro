@@ -1,4 +1,4 @@
-/* QDPAK heatsink study — UI (rev r2) */
+/* QDPAK heatsink study — UI (rev r3) */
 (function () {
 'use strict';
 const HS = window.HS, DEF = window.HS_DEFAULTS, CFM = HS.CFM;
@@ -235,22 +235,89 @@ function syncForm() {
   for (let i = 1; i <= 4; i++) ['Fr', 'Ft'].forEach(p => { const el = document.getElementById('f_' + p + i); if (el && document.activeElement !== el) el.value = cfg[p + i]; });
 }
 
-/* ---------------- compute & render scheduling ---------------- */
-let tmr = null;
-function schedule() { clearTimeout(tmr); tmr = setTimeout(recompute, 70); }
-function recompute() {
-  const t0 = performance.now();
-  try { R = HS.compute(cfg); }
-  catch (e) { R = null; console.error(e); $('#alerts').innerHTML = `<div class="alert bad"><span class="pill bad">ERROR</span><span>Calculation failed: ${e.message}. Check the last edited value.</span></div>`; return; }
-  $('#calcTime').textContent = `solved in ${fmt(performance.now() - t0, 0)} ms`;
-  sweepDirty = true; saveCfg();
-  renderSummary(); renderView();
+/* ---------------- run control: auto / manual recalculation with progress ---------------- */
+let tmr = null, runId = 0, busy = false, dirty = false, pendingSweep = false;
+const RC = () => (R && R.cfg) || cfg;          // configuration the displayed results were solved with
+function loadUi() { try { return JSON.parse(localStorage.getItem(KEY + '-ui') || '{}'); } catch (e) { return {}; } }
+function saveUi() { try { localStorage.setItem(KEY + '-ui', JSON.stringify({ auto })); } catch (e) { /* storage unavailable */ } }
+let auto = loadUi().auto !== false;
+const frame = () => new Promise(res => { let done = false; const f = () => { if (!done) { done = true; res(); } }; try { requestAnimationFrame(f); } catch (e) { /* no rAF */ } setTimeout(f, 40); });
+function setState(st) { document.body.dataset.state = st; }
+function setProgress(p, label) {
+  const bar = $('#prog'), pc = Math.round(Math.max(0, Math.min(1, p)) * 100);
+  clearTimeout(endProgress._t); bar.classList.add('on');
+  $('#progFill').style.width = pc + '%'; bar.setAttribute('aria-valuenow', pc);
+  $('#progTxt').textContent = `${label} · ${pc} %`;
+}
+function endProgress(msg) {
+  const bar = $('#prog'); $('#progFill').style.width = '100%'; bar.setAttribute('aria-valuenow', 100);
+  $('#progTxt').textContent = msg;
+  clearTimeout(endProgress._t); endProgress._t = setTimeout(() => { bar.classList.remove('on'); $('#progFill').style.width = '0%'; }, 700);
+}
+function setDirty(v) {
+  dirty = v;
+  const manualStale = v && !auto;
+  document.body.classList.toggle('stale', manualStale);
+  $('#btnRecalc').classList.toggle('pending', manualStale);
+  if (manualStale) { $('#progTxt').textContent = 'Changes pending'; if (!busy) setState('stale'); }
+}
+function schedule() {
+  saveCfg();
+  if (auto) { clearTimeout(tmr); setState('busy'); tmr = setTimeout(() => recompute(), 120); }
+  else setDirty(true);
+}
+async function recompute() {
+  clearTimeout(tmr);
+  const id = ++runId, t0 = performance.now(), snap = Object.assign({}, cfg), withSweep = view === 'sweep';
+  const span = withSweep ? 0.72 : 0.92;
+  busy = true; setState('busy'); setDirty(false);
+  setProgress(0, 'Starting');
+  let res;
+  try {
+    const gen = HS.computeGen(snap);
+    let st, lastYield = performance.now();
+    while (!(st = gen.next()).done) {
+      if (performance.now() - lastYield > 14) {
+        setProgress(st.value.p * span, st.value.stage); await frame();
+        if (id !== runId) return;
+        lastYield = performance.now();
+      }
+    }
+    res = st.value;
+  } catch (e) {
+    if (id !== runId) return;
+    busy = false; R = null; console.error(e); setState('idle');
+    $('#alerts').innerHTML = `<div class="alert bad"><span class="pill bad">ERROR</span><span>Calculation failed: ${e.message}. Check the last edited value.</span></div>`;
+    endProgress('Calculation failed'); return;
+  }
+  if (id !== runId) return;
+  const tSolve = performance.now() - t0;
+  R = res; sweepDirty = true;
+  setProgress(span, 'Rendering results'); await frame();
+  if (id !== runId) return;
+  renderSummary(); renderView({ noSweep: true });
+  if ((withSweep || pendingSweep) && !R.invalid) { pendingSweep = false; await runSweepAsync(id, span, 1); if (id !== runId) return; }
+  busy = false;
+  $('#calcTime').textContent = `solved in ${fmt(tSolve, 0)} ms`;
+  endProgress(`Done · ${fmt(performance.now() - t0, 0)} ms · ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`);
+  setState(dirty && !auto ? 'stale' : 'idle');
+  if (dirty && !auto) setDirty(true);
+}
+async function sweepNow() {
+  if (busy) { pendingSweep = true; return; }
+  if (dirty && !auto) { pendingSweep = true; return recompute(); }
+  const id = ++runId, t0 = performance.now();
+  busy = true; setState('busy'); setProgress(0, 'Sweep');
+  await runSweepAsync(id, 0, 1);
+  if (id !== runId) return;
+  busy = false; setState('idle');
+  endProgress(`Sweep done · ${fmt(performance.now() - t0, 0)} ms`);
 }
 
 /* ---------------- KPI strip + alerts ---------------- */
-function stat(T) { return T > cfg.Tlim ? 'bad' : T > cfg.Tlim - 10 ? 'warn' : 'ok'; }
+function stat(T) { return T > RC().Tlim ? 'bad' : T > RC().Tlim - 10 ? 'warn' : 'ok'; }
 function renderSummary() {
-  const c = cfg;
+  const c = RC();
   $('#subline').textContent = `${c.nLegs}-leg inverter · ${2 * c.nLegs} switches × ${c.nPar}∥ top-side-cooled QDPAK = ${2 * c.nLegs * c.nPar} dies · ${c.Vdc} V · TIM option ${c.timMode} · ${c.fanMode === 'natural' ? 'natural convection' : c.fanMode + ' fans'} · ${c.Tamb} °C at ${c.alt} m`;
   if (!R || R.invalid) {
     $('#kpis').innerHTML = '';
@@ -289,13 +356,14 @@ function showView(v) {
   $('#v-setup').classList.toggle('active', v === 'setup');
   renderView();
 }
-function renderView() {
-  if (!R || R.invalid) { document.querySelectorAll('.view.active canvas').forEach(cv => { const p = prep(cv, 60); p.ctx.fillStyle = css('--bad'); p.ctx.font = '13px sans-serif'; p.ctx.fillText('Fix the geometry to see results.', 10, 30); }); return; }
+function renderView(opts = {}) {
+  if (!R) return;
+  if (R.invalid) { document.querySelectorAll('.view.active canvas').forEach(cv => { const p = prep(cv, 60); p.ctx.fillStyle = css('--bad'); p.ctx.font = '13px sans-serif'; p.ctx.fillText('Fix the geometry to see results.', 10, 30); }); return; }
   try {
     if (view === 'map') renderMap();
     else if (view === 'flow') renderFlow();
     else if (view === 'transient') renderTransient();
-    else if (view === 'sweep') { if (sweepDirty) runSweep(); else drawSweep(); }
+    else if (view === 'sweep') { if (sweepDirty && !opts.noSweep) sweepNow(); else drawSweep(); }
     else if (view === 'equations') renderEquations();
   } catch (e) { console.error(e); }
 }
@@ -414,7 +482,7 @@ const legColor = leg => ({ A: css('--air'), B: css('--c4'), C: css('--c3') }[leg
 
 /* ---------------- top view (sketch or heat map) ---------------- */
 function drawTop(cv, mode) {
-  const g = R.g, c = cfg, heat = mode === 'heat';
+  const g = R.g, c = RC(), heat = mode === 'heat';
   const w0 = Math.max(cv.clientWidth || 600, 240);
   const M = { l: 42, r: 42, t: 26, b: heat ? (w0 < 500 ? 70 : 58) : 30 };
   const sc = (w0 - M.l - M.r) / g.L, ph = g.W * sc;
@@ -514,7 +582,7 @@ function drawTop(cv, mode) {
 
 /* ---------------- front section ---------------- */
 function drawFront(cv) {
-  const g = R.g, c = cfg, mm = 1e-3;
+  const g = R.g, c = RC(), mm = 1e-3;
   const tim = R.tim, tP = 1.6 * mm, tD = 2.3 * mm, tGap = tim.tEval, tIso = tim.tIso, z0b = tP + tD + tGap + tIso, z1b = z0b + g.tb, zf = z1b + g.H;
   const ct = (!c.shroud && c.fanMode !== 'impinge' && c.fanMode !== 'natural') ? c.cTip * mm : 0;
   const D = c.fanD * mm, zc = z0b + (g.tb + g.H) / 2;
@@ -558,10 +626,10 @@ function drawFront(cv) {
 function renderMap() {
   drawTop($('#cvMap'), 'heat');
   const m = R.map;
-  $('#mapCap').textContent = `x = ${cfg.Px} W total · inlet ${fmt(R.Tin, 1)} °C · outlet air ${fmt(m.TairOutAvg, 1)} °C avg / ${fmt(m.TairOutMax, 1)} °C max · grid ${m.nx}×${m.ny}, ${m.iters} SOR sweeps, energy balance ${fmt(m.balance * 100, 3)} %. Labels: T_j.`;
-  const pcb = cfg.pcbOn;
+  $('#mapCap').textContent = `x = ${RC().Px} W total · inlet ${fmt(R.Tin, 1)} °C · outlet air ${fmt(m.TairOutAvg, 1)} °C avg / ${fmt(m.TairOutMax, 1)} °C max · grid ${m.nx}×${m.ny}, ${m.iters} SOR sweeps, energy balance ${fmt(m.balance * 100, 3)} %. Labels: T_j.`;
+  const pcb = RC().pcbOn;
   let t = `<table><thead><tr><th>Device</th><th class="n">P (W)</th>${pcb ? '<th class="n">P_pcb</th>' : ''}<th class="n">T_base</th><th class="n">T_case</th><th class="n">T_j</th><th class="n">Margin (K)</th></tr></thead><tbody>`;
-  R.devs.forEach(d => { t += `<tr><td>${d.id}</td><td class="n">${fmt(d.P, 1)}</td>${pcb ? `<td class="n">${fmt(d.Ppcb, 1)}</td>` : ''}<td class="n">${fmt(d.Tbase, 1)}</td><td class="n">${fmt(d.Tcase, 1)}</td><td class="n${d === R.hot ? ' hot' : ''}">${fmt(d.Tj, 1)}</td><td class="n">${fmt(cfg.Tlim - d.Tj, 1)}</td></tr>`; });
+  R.devs.forEach(d => { t += `<tr><td>${d.id}</td><td class="n">${fmt(d.P, 1)}</td>${pcb ? `<td class="n">${fmt(d.Ppcb, 1)}</td>` : ''}<td class="n">${fmt(d.Tbase, 1)}</td><td class="n">${fmt(d.Tcase, 1)}</td><td class="n${d === R.hot ? ' hot' : ''}">${fmt(d.Tj, 1)}</td><td class="n">${fmt(RC().Tlim - d.Tj, 1)}</td></tr>`; });
   $('#devTable').innerHTML = t + '</tbody></table>';
   const st = R.stack, hot = R.hot, P = R.PdevX;
   const C = { jc: css('--c3'), tim: css('--air'), sp: css('--c4'), d1: css('--muted'), cv: css('--accent'), cal: css('--warn') };
@@ -576,14 +644,14 @@ function renderMap() {
   ], { scale: v => fmt(v, 2) + ' K/W' });
   $('#stackLeg').innerHTML = legendHTML([[C.jc, 'R_jc'], [C.tim, 'R_TIM (gap + isolation + contact)'], [C.sp, 'spreading (R_sp / R_v)'], [C.d1, 'R_1D base'], [C.cv, 'convection (map: base+fins+air)'], [C.cal, 'air heating (caloric)']]);
   const ny = m.ny, yy = [], ww = [];
-  for (let j = 0; j < ny; j++) { yy.push((j + 0.5) / ny * cfg.W); ww.push(m.wY[j]); }
-  const vl = cfg.fanMode === 'natural' ? [] : Array.from({ length: cfg.fanN }, (_, i) => ({ x: cfg.W * (i + 0.5) / cfg.fanN + cfg.fanOffY, label: 'fan ' + (i + 1), c: css('--air') }));
-  lineChart($('#cvWeights'), { h: 190, series: [{ x: yy, y: ww, c: css('--air'), fill: true }], vl, xl: 'position across width y (mm)', yl: 'w(y)', ymin: 0, xmin: 0, xmax: cfg.W, yfmt: v => v.toFixed(1) });
+  for (let j = 0; j < ny; j++) { yy.push((j + 0.5) / ny * RC().W); ww.push(m.wY[j]); }
+  const vl = RC().fanMode === 'natural' ? [] : Array.from({ length: RC().fanN }, (_, i) => ({ x: RC().W * (i + 0.5) / RC().fanN + RC().fanOffY, label: 'fan ' + (i + 1), c: css('--air') }));
+  lineChart($('#cvWeights'), { h: 190, series: [{ x: yy, y: ww, c: css('--air'), fill: true }], vl, xl: 'position across width y (mm)', yl: 'w(y)', ymin: 0, xmin: 0, xmax: RC().W, yfmt: v => v.toFixed(1) });
   drawFront($('#cvFront'));
   renderTimCard();
 }
 function renderTimCard() {
-  const t = R.tim, c = cfg, P = R.hot.Ptop, A = R.stack.Apad;
+  const t = R.tim, c = RC(), P = R.hot.Ptop, A = R.stack.Apad;
   const rows = [['Gap ' + (c.timMode === 'B' ? 'pad' : 'filler'), `${fmt(t.tEval * 1e3, 2)} (${fmt(t.tmin * 1e3, 2)}…${fmt(t.tMax * 1e3, 2)})`, c.timK, t.Rparts.gap, c.timE > 0 ? fmt(t.Vgap, 2) : 'not credited', c.timEr]];
   if (t.iso) rows.push(['Isolation · ' + c.isoPreset, fmt(t.tIso * 1e3, 2), c.isoK, t.Rparts.iso, fmt(t.Viso, 2), c.isoEr]);
   rows.push(['Contact R″ (all faces)', '—', '—', t.Rparts.c, '—', '—']);
@@ -602,7 +670,7 @@ function renderTimCard() {
 /* ---------------- flow view ---------------- */
 function renderFlow() {
   drawTop($('#cvTop'), 'sketch');
-  const c = cfg, op = R.op;
+  const c = RC(), op = R.op;
   if (!op) {
     const n = R.natRes;
     const p = prep($('#cvFan'), 70); p.ctx.font = FONT; p.ctx.fillStyle = css('--muted'); p.ctx.fillText('Natural convection — no fan operating point.', 8, 30);
@@ -652,7 +720,7 @@ const kv = rows => rows.map(([a, b]) => `<div><span>${a}</span><b>${b}</b></div>
 
 /* ---------------- transient view ---------------- */
 function renderTransient() {
-  const T = R.trans, c = cfg, tp = T.tp;
+  const T = R.trans, c = RC(), tp = T.tp;
   const tauHs = Math.max(T.tauHs, 1e-3), tEnd = tp + Math.max(2 * tp, Math.min(4 * tauHs, 20 * tp));
   const n = 420, ts = [], tj = [], ths = [];
   const PdX = R.PdevX, dPa = R.PdevY - R.PdevX, ThsSS = R.Tin + PdX * T.extHs.reduce((a, x) => a + x.R, 0);
@@ -720,28 +788,35 @@ const SWEEP = {
 let swData = null;
 function sweepOptions() {
   const sel = $('#swK'), cur = sel.value;
-  const keys = Object.keys(SWEEP).filter(k => !SWEEP[k].ok || SWEEP[k].ok(cfg));
+  const keys = Object.keys(SWEEP).filter(k => !SWEEP[k].ok || SWEEP[k].ok(RC()));
   sel.innerHTML = keys.map(k => `<option value="${k}">${SWEEP[k].l}</option>`).join('');
   if (keys.includes(cur)) sel.value = cur; else { sel.value = keys[0]; setSweepRange(); }
 }
 function setSweepRange() { const s = SWEEP[$('#swK').value]; if (!s) return; $('#swA').value = s.a; $('#swB').value = s.b; }
-function runSweep() {
+async function runSweepAsync(id, p0 = 0, p1 = 1) {
+  if (!R || R.invalid) return;
   sweepOptions();
-  const k = $('#swK').value, s = SWEEP[k], a = +$('#swA').value, b = +$('#swB').value, n = Math.max(3, Math.min(80, Math.round(+$('#swN').value || 25)));
-  const t0 = performance.now(), xs = [], out = [];
+  const base = RC(), k = $('#swK').value, s = SWEEP[k], a = +$('#swA').value, b = +$('#swB').value, n = Math.max(3, Math.min(80, Math.round(+$('#swN').value || 25)));
+  const t0 = performance.now(), xs = [], out = [], name = s.l.split(' (')[0];
   let vals = []; for (let i = 0; i < n; i++) vals.push(a + (b - a) * i / (n - 1));
   if (s.int) vals = [...new Set(vals.map(Math.round))];
-  vals.forEach(v => { const c2 = Object.assign({}, cfg, { [k]: v }); let r; try { const R2 = HS.compute(c2, { grid: 'coarse' }); r = R2.invalid ? null : { TjHot: R2.TjHot, Tpk: R2.trans.TpeakY, Rsa: R2.Rsa, Q: R2.op ? R2.op.Qfan / CFM : NaN, dp: R2.op ? R2.op.dpFan : NaN, mass: R2.g.mass * 1e3 }; } catch (e) { r = null; } xs.push(v); out.push(r); });
+  let last = performance.now();
+  for (let i = 0; i < vals.length; i++) {
+    const v = vals[i], c2 = Object.assign({}, base, { [k]: v }); let r;
+    try { const R2 = HS.compute(c2, { grid: 'coarse' }); r = R2.invalid ? null : { TjHot: R2.TjHot, Tpk: R2.trans.TpeakY, Rsa: R2.Rsa, Q: R2.op ? R2.op.Qfan / CFM : NaN, dp: R2.op ? R2.op.dpFan : NaN, mass: R2.g.mass * 1e3 }; } catch (e) { r = null; }
+    xs.push(v); out.push(r);
+    if (performance.now() - last > 14) { setProgress(p0 + (p1 - p0) * (i + 1) / vals.length, `Sweep ${name} · point ${i + 1}/${vals.length}`); await frame(); if (id !== runId) return; last = performance.now(); }
+  }
   swData = { k, xs, out, ms: performance.now() - t0 };
   sweepDirty = false; drawSweep();
 }
 function drawSweep() {
   if (!swData) return;
-  const { k, xs, out } = swData, s = SWEEP[k], get = f => out.map(o => o ? o[f] : NaN), cur = cfg[k];
+  const { k, xs, out } = swData, s = SWEEP[k], get = f => out.map(o => o ? o[f] : NaN), cur = RC()[k];
   const pk = get('Tpk'); let best = -1; pk.forEach((v, i) => { if (isFinite(v) && (best < 0 || v < pk[best])) best = i; });
   const vl = [{ x: cur, label: 'current', c: css('--ink') }];
-  lineChart($('#cvSw1'), { h: 230, series: [{ x: xs, y: pk, c: css('--accent'), label: `peak at y, ${cfg.tp} s`, dots: true }, { x: xs, y: get('TjHot'), c: css('--air'), label: 'steady at x', dots: true }],
-    hl: [{ y: cfg.Tlim, c: css('--warn'), label: 'design limit' }], vl, pts: best >= 0 ? [{ x: xs[best], y: pk[best], c: css('--accent'), label: `min ${fmt(pk[best], 1)} °C` }] : [], xl: s.l, yl: 'T_j hottest (°C)' });
+  lineChart($('#cvSw1'), { h: 230, series: [{ x: xs, y: pk, c: css('--accent'), label: `peak at y, ${RC().tp} s`, dots: true }, { x: xs, y: get('TjHot'), c: css('--air'), label: 'steady at x', dots: true }],
+    hl: [{ y: RC().Tlim, c: css('--warn'), label: 'design limit' }], vl, pts: best >= 0 ? [{ x: xs[best], y: pk[best], c: css('--accent'), label: `min ${fmt(pk[best], 1)} °C` }] : [], xl: s.l, yl: 'T_j hottest (°C)' });
   lineChart($('#cvSw2'), { h: 210, series: [{ x: xs, y: get('Rsa').map(v => v * 1e3), c: css('--accent'), dots: true }], hl: [{ y: R.RsaReqX * 1e3, c: css('--warn'), label: 'needed at x' }], vl, xl: s.l, yl: 'R_sa (mK/W)', zeroY: true });
   lineChart($('#cvSw3'), { h: 210, series: [{ x: xs, y: get('Q'), c: css('--air'), dots: true, label: 'airflow (CFM)' }], vl, xl: s.l, yl: 'Q (CFM)', zeroY: true });
   lineChart($('#cvSw4'), { h: 210, series: [{ x: xs, y: get('mass'), c: css('--c3'), dots: true }], vl, xl: s.l, yl: 'mass (g)', zeroY: true });
@@ -750,7 +825,7 @@ function drawSweep() {
 
 /* ---------------- equations ---------------- */
 function renderEquations() {
-  const c = cfg, g = R.g, A = R.Am, st = R.stack, sp = st.sp, op = R.op, ht = R.ht, nat = R.nat, T = R.trans, F = R.fail;
+  const c = RC(), g = R.g, A = R.Am, st = R.stack, sp = st.sp, op = R.op, ht = R.ht, nat = R.nat, T = R.trans, F = R.fail;
   const s0 = ht ? ht.secs[0] : null, cc = s0 ? s0.c : null, NA = 'n/a — natural-convection mode', plateT = g.type === 'plate';
   const I = s => `<i>${s}</i>`;
   const G = [];
@@ -876,7 +951,7 @@ function openModal(title, text, apply) {
   $('#modalApply').hidden = !apply; $('#modal').classList.add('open'); $('#modalText').focus(); if (!apply) $('#modalText').select();
 }
 function summaryMD() {
-  const c = cfg, r = R; if (!r || r.invalid) return 'Invalid geometry';
+  const c = RC(), r = R; if (!r || r.invalid) return 'Invalid geometry';
   const g = r.g, T = r.trans, op = r.op;
   return [`# QDPAK heatsink study — r2 summary`, ``,
     `**Load** x = ${c.Px} W continuous, y = ${c.Py} W for ${c.tp} s · ${2 * c.nLegs} switches × ${c.nPar}∥ = ${r.Ndev} QDPAK · ${c.Vdc} V · δ = ${c.imb} % · ${c.Tamb} °C at ${c.alt} m · limit ${c.Tlim} °C`,
@@ -898,8 +973,13 @@ function init() {
   buildForm(); syncForm();
   document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => { if (location.hash !== '#' + b.dataset.v) location.hash = b.dataset.v; else showView(b.dataset.v); }));
   window.addEventListener('hashchange', () => showView(location.hash.slice(1)));
-  $('#swK').addEventListener('change', () => { setSweepRange(); runSweep(); });
-  $('#swRun').addEventListener('click', runSweep);
+  $('#swK').addEventListener('change', () => { setSweepRange(); sweepNow(); });
+  $('#swRun').addEventListener('click', () => sweepNow());
+  $('#btnRecalc').addEventListener('click', () => recompute());
+  const ac = $('#autoRun'); ac.checked = auto;
+  ac.addEventListener('change', () => { auto = ac.checked; saveUi(); if (auto && dirty) recompute(); else setDirty(dirty); toast(auto ? 'Auto recalculation on' : 'Auto off — press Recalculate to apply changes'); });
+  $('#setupForm').addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); recompute(); } });
+  document.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); recompute(); } });
   $('#btnSummary').addEventListener('click', () => copyText(summaryMD(), 'Summary'));
   $('#btnCfg').addEventListener('click', () => copyText(JSON.stringify(cfg, null, 1), 'Config'));
   $('#btnLoad').addEventListener('click', () => openModal('Load configuration', '', true));
@@ -912,8 +992,9 @@ function init() {
   const mq = window.matchMedia('(prefers-color-scheme: dark)'); if (mq.addEventListener) mq.addEventListener('change', renderView);
   new MutationObserver(renderView).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   sweepOptions(); setSweepRange();
-  recompute();
+  setState('busy');
   showView(location.hash ? location.hash.slice(1) : 'map');
+  recompute();
 }
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();

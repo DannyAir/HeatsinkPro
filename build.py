@@ -2,7 +2,7 @@
 """Assemble the self-contained study page: src/ -> dist/HeatsinkStudy_<REV>.html"""
 import pathlib
 
-REV = 'r2'
+REV = 'r3'
 root = pathlib.Path(__file__).resolve().parent
 src = root / 'src'
 t = (src / 'template.html').read_text(encoding='utf-8').replace('<h2>Airflow and fan pressure</h2>', '<h2>Airflow</h2>')
