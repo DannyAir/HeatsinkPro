@@ -1,5 +1,5 @@
 /* ==========================================================================
-   QDPAK inverter heatsink study — physics engine  (rev r1)
+   QDPAK inverter heatsink study — physics engine  (rev r2)
    All internal units SI. cfg uses engineering units (mm, W, degC, CFM, Pa).
    ========================================================================== */
 (function (root) {
@@ -21,15 +21,53 @@ const MATERIALS = {
   'Vapor chamber (k_eff)': { k: 5000, rho: 5500, cp: 385, baseOnly: true },
   'Custom':                null
 };
+/* Gap materials (compliant layer that absorbs height tolerance). Class values — confirm on the supplier datasheet.
+   E = dielectric strength credited for isolation (kV/mm, 0 = not credited), er = relative permittivity. */
 const TIMS = {
-  'Gap filler 3 W/m·K, 0.30 mm':         { k: 3,   t: 0.30 },
-  'Gap filler 5 W/m·K, 0.25 mm':         { k: 5,   t: 0.25 },
-  'Gap filler 8 W/m·K, 0.20 mm':         { k: 8,   t: 0.20 },
-  'Gap pad 5 W/m·K, 0.50 mm':            { k: 5,   t: 0.50 },
-  'Insulating film 1.6 W/m·K, 0.15 mm':  { k: 1.6, t: 0.15 },
-  'AlN 0.38 mm + 2× grease (k_eq≈22)':   { k: 22,  t: 0.43 },
-  'Custom':                              null
+  'Gap filler 6 W/m·K, insulating':        { k: 6,   E: 5, er: 6.0 },
+  'Gap filler 8 W/m·K, insulating':        { k: 8,   E: 4, er: 7.0 },
+  'Gap filler 3 W/m·K, insulating':        { k: 3,   E: 6, er: 5.5 },
+  'Ultrasoft gap pad 5 W/m·K, insulating': { k: 5,   E: 8, er: 6.0 },
+  'Gap pad 8 W/m·K, insulating':           { k: 8,   E: 6, er: 7.0 },
+  'Thermal grease 3 W/m·K (not credited)': { k: 3,   E: 0, er: 4.0 },
+  'Custom':                                null
 };
+/* Guaranteed isolation layer for option C (foil or ceramic plate). Typical values — confirm with supplier. */
+const ISOS = {
+  'Al₂O₃ 96 % plate 0.38 mm':          { k: 24,   t: 0.38, E: 15,  er: 9.8 },
+  'AlN plate 0.38 mm':                  { k: 170,  t: 0.38, E: 15,  er: 8.8 },
+  'Si₃N₄ plate 0.32 mm':                { k: 90,   t: 0.32, E: 20,  er: 8.0 },
+  'Polyimide-based thermal film 0.15 mm': { k: 1.3, t: 0.15, E: 40, er: 3.7 },
+  'Polyimide foil (MT type) 0.05 mm':   { k: 0.46, t: 0.05, E: 150, er: 4.2 },
+  'Custom':                             null
+};
+/* IEC 60664-1 Table A.2 altitude correction factors for clearances (verify against the standard edition in use) */
+const ALT_K = [[2000, 1.00], [3000, 1.14], [4000, 1.29], [5000, 1.48], [6000, 1.70], [7000, 1.95], [8000, 2.25], [9000, 2.62], [10000, 3.02]];
+function altFactor(h) {
+  if (h <= 2000) return 1;
+  for (let i = 1; i < ALT_K.length; i++) if (h <= ALT_K[i][0]) { const a = ALT_K[i - 1], b = ALT_K[i]; return a[1] + (b[1] - a[1]) * (h - a[0]) / (b[0] - a[0]); }
+  return ALT_K[ALT_K.length - 1][1];
+}
+/* Thermal + electrical model of the TIM / isolation stack (per device pad)
+   A: insulating gap filler only · B: insulating gap pad · C: gap filler + isolation foil/ceramic (Infineon option C) */
+function timStack(cfg, Apad) {
+  const mode = cfg.timMode || 'A', iso = mode === 'C';
+  const tmin = Math.max(cfg.timTmin, 0) / 1e3, dh = Math.max(cfg.timDh, 0) / 1e3;
+  const tEval = tmin + (cfg.timCase === 'nominal' ? dh / 2 : dh), tMax = tmin + dh;
+  const tIso = iso ? cfg.isoT / 1e3 : 0;
+  const Rgap = tEval / cfg.timK, Riso = iso ? tIso / cfg.isoK : 0, Rc = cfg.timRc * 1e-6;
+  const Rpp = Rgap + Riso + Rc;
+  // withstand: only layers credited for isolation, at their thinnest point
+  const Vgap = Math.max(cfg.timE, 0) * tmin * 1e3, Viso = iso ? Math.max(cfg.isoE, 0) * tIso * 1e3 : 0; // kV
+  const Vbd = Vgap + Viso, tIns = (cfg.timE > 0 ? tmin : 0) + tIso;
+  const tReq = (!iso && cfg.timE > 0) ? cfg.Vreq / cfg.timE : NaN;      // mm of gap material needed
+  const Ework = tIns > 0 ? (cfg.Vdc / 1e3) / (tIns * 1e3) : Infinity; // kV/mm at DC-link voltage
+  // drain-to-heatsink capacitance at the thinnest bond line (worst for CM current)
+  const EPS0 = 8.854e-12, sumT = (tmin > 0 ? tmin / cfg.timEr : 0) + (iso ? tIso / cfg.isoEr : 0);
+  const Cdev = sumT > 0 ? EPS0 * Apad / sumT : Infinity;
+  return { mode, iso, tmin, dh, tEval, tMax, tIso, Rgap, Riso, Rc, Rpp, R: Rpp / Apad, Vgap, Viso, Vbd, tIns, tReq, Ework, Cdev,
+    Rparts: { gap: Rgap / Apad, iso: Riso / Apad, c: Rc / Apad } };
+}
 /* generic class values — replace with the fan datasheet curve */
 const FANS = {
   '40×40×28 high-speed axial':  { D: 40,  Qmax: 23,  Pmax: 900,  n: 1.3, Pel: 12 },
@@ -44,6 +82,7 @@ const FANS = {
 
 /* ---------------- helpers ---------------- */
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const fmtN = (v, d) => isFinite(v) ? v.toFixed(d) : '—';
 function bisect(fn, lo, hi, it = 64) { // fn(lo) and fn(hi) opposite sign; returns root
   let flo = fn(lo);
   for (let i = 0; i < it; i++) {
@@ -301,19 +340,30 @@ function leeSpreading(Apad, Acell, tb, k, hEff) {
 }
 
 /* ---------------- device layout ---------------- */
+/* N_par paralleled dies per switch position; 2·n_legs positions.
+   Layouts — posRows: each switch position is a row of N_par along the airflow (rows stacked across W)
+             posCols: each switch position is a row of N_par across the airflow (positions in series along L)
+             along  : each leg (HS then LS, 2·N_par) is one row along the airflow
+             across : each leg is one row across the airflow                                         */
+function nParOf(cfg) { return Math.max(1, Math.round(cfg.nPar != null ? cfg.nPar : (cfg.perLeg || 2) / 2)); }
 function devices(cfg, g) {
-  const nL = Math.round(cfg.nLegs), nP = Math.round(cfg.perLeg), Npar = Math.max(1, Math.floor(nP / 2));
+  const nL = Math.max(1, Math.round(cfg.nLegs)), Npar = nParOf(cfg), lay = cfg.layout || 'posRows';
+  const pos = lay === 'posRows' || lay === 'posCols', rowAlongFlow = lay === 'along' || lay === 'posRows';
+  const perRow = pos ? Npar : 2 * Npar, nRows = pos ? 2 * nL : nL;
   let ax = cfg.padL / 1e3, ay = cfg.padW / 1e3, px = cfg.pkgL / 1e3, py = cfg.pkgW / 1e3;
+  if (!rowAlongFlow) { [ax, ay] = [ay, ax]; [px, py] = [py, px]; }   // long side follows the row
   if (cfg.rotate) { [ax, ay] = [ay, ax]; [px, py] = [py, px]; }
-  if (cfg.layout === 'across') { [ax, ay] = [ay, ax]; [px, py] = [py, px]; }
   const cx = g.L / 2 + cfg.offX / 1e3, cy = g.W / 2 + cfg.offY / 1e3, list = [];
-  const d = cfg.imb / 100;
-  for (let leg = 0; leg < nL; leg++) for (let k = 0; k < nP; k++) {
-    const a = (leg - (nL - 1) / 2) * cfg.pitchLeg / 1e3, b = (k - (nP - 1) / 2) * cfg.pitchDev / 1e3;
-    const x = cfg.layout === 'along' ? cx + b : cx + a, y = cfg.layout === 'along' ? cy + a : cy + b;
-    const sw = k < nP / 2 ? 'HS' : 'LS', j = k % Npar;
+  const d = cfg.imb / 100, gapLeg = pos ? (cfg.legGap || 0) / 1e3 : 0;
+  const offs = []; for (let i = 0; i < nRows; i++) offs.push(i * cfg.pitchLeg / 1e3 + (pos ? Math.floor(i / 2) : i) * gapLeg);
+  const mid = (offs[0] + offs[nRows - 1]) / 2;
+  for (let i = 0; i < nRows; i++) for (let k = 0; k < perRow; k++) {
+    const a = offs[i] - mid, b = (k - (perRow - 1) / 2) * cfg.pitchDev / 1e3;
+    const x = rowAlongFlow ? cx + b : cx + a, y = rowAlongFlow ? cy + a : cy + b;
+    const legI = pos ? Math.floor(i / 2) : i, sw = pos ? (i % 2 ? 'LS' : 'HS') : (k < Npar ? 'HS' : 'LS'), j = pos ? k : k % Npar;
     const fac = Npar > 1 ? 1 + d * (1 - 2 * j / (Npar - 1)) : 1;
-    list.push({ id: 'ABC'.charAt(leg) + '-' + sw + (Npar > 1 ? (j + 1) : ''), leg: 'ABC'.charAt(leg) || String(leg + 1), sw, x, y, ax, ay, px, py, fac });
+    const leg = 'ABCDEF'.charAt(legI) || String(legI + 1);
+    list.push({ id: leg + '-' + sw + (Npar > 1 ? (j + 1) : ''), leg, sw, x, y, ax, ay, px, py, fac });
   }
   return list;
 }
@@ -496,7 +546,8 @@ function compute(cfg, opt = {}) {
 
   /* ---- device stack (analytic, average device) ---- */
   const Apad = (cfg.padL * cfg.padW) / 1e6, Acell = g.L * g.W / Ndev, kb = g.mb.k;
-  const Rjc = cfg.Rjc, Rtim = (cfg.timT / 1e3 / cfg.timK + cfg.timRc * 1e-6) / Apad;
+  const tim = timStack(cfg, Apad); R.tim = tim;
+  const Rjc = cfg.Rjc, Rtim = tim.R;
   const sp = leeSpreading(Apad, Acell, g.tb, kb, R.hEff);
   const RsaShare = Ndev * R.Rsa, RconvShare = nat ? RsaShare : Ndev * ht.Rconv, RcalShare = Math.max(RsaShare - RconvShare, 0);
   const Rext = Rtim + sp.RspAvg + sp.R1D + RsaShare;
@@ -589,6 +640,8 @@ function compute(cfg, opt = {}) {
     if (c0.V > 20) note('warn', `Channel velocity ${c0.V.toFixed(1)} m/s — acoustic noise and fan power will be high.`);
     if (dTair > 30) note('warn', `Air temperature rise ${dTair.toFixed(1)} K — downstream devices see hot air.`);
     if (cfg.fanMode !== 'impinge' && cfg.fanD / 1e3 > 1.3 * (g.H + g.tb)) note('info', `Fan frame ${cfg.fanD} mm is taller than the fin face (${((g.H + g.tb) * 1e3).toFixed(0)} mm): a converging plenum is needed — include it in K_sys (≈ 0.3–0.5).`);
+    if (cfg.fanMode !== 'impinge' && cfg.fanN * cfg.fanD / 1e3 > 1.08 * g.W) note('warn', `${cfg.fanN} × ${cfg.fanD} mm fans (${cfg.fanN * cfg.fanD} mm) do not fit across W = ${(g.W * 1e3).toFixed(0)} mm — needs a diverging plenum or fewer/smaller fans.`);
+    if (cfg.fanMode === 'impinge' && cfg.fanN * cfg.fanD / 1e3 > 1.08 * g.W) note('warn', `${cfg.fanN} × ${cfg.fanD} mm fans do not fit across W = ${(g.W * 1e3).toFixed(0)} mm.`);
     if (cfg.fanMode !== 'impinge' && cfg.fanN * cfg.fanD / 1e3 < 0.7 * g.W) note('info', `Fans cover ${(cfg.fanN * cfg.fanD / 1e3 / g.W * 100).toFixed(0)} % of the heatsink width — outer channels are starved (see flow-weight profile).`);
   }
   if (g.type === 'plate') {
@@ -600,6 +653,17 @@ function compute(cfg, opt = {}) {
   if (R.TjHot > cfg.Tlim) note('bad', `Steady T_j,hot ${R.TjHot.toFixed(1)} °C exceeds design limit ${cfg.Tlim} °C at x = ${cfg.Px} W.`);
   if (TpeakY > cfg.Tlim) note('bad', `Peak T_j ${TpeakY.toFixed(1)} °C exceeds ${cfg.Tlim} °C for y = ${cfg.Py} W over ${cfg.tp} s.`);
   if (TpeakY > cfg.TjMax) note('bad', `Peak exceeds absolute T_j,max ${cfg.TjMax} °C.`);
+  /* ---- isolation / EMI (800 V class) ---- */
+  const Npar = nParOf(cfg);
+  tim.Vreq = cfg.Vreq; tim.margin = tim.Vbd / Math.max(cfg.Vreq, 1e-9);
+  tim.icmPhase = Npar * (isFinite(tim.Cdev) ? tim.Cdev : 0) * cfg.dvdt * 1e9;   // A, LS drains = switch node
+  tim.kAlt = altFactor(cfg.alt);
+  if (!isFinite(tim.Cdev)) note('bad', 'No insulating layer between the live drain pad and the heatsink (zero bond line and no isolation layer).');
+  else if (tim.Vbd < cfg.Vreq * (1 - 1e-9)) note('bad', `Insulation withstand ${tim.Vbd.toFixed(2)} kV < required ${cfg.Vreq} kV` + (tim.iso ? ' — thicker isolation layer or higher-strength material.' : ` — minimum bond line must be ≥ ${fmtN(tim.tReq, 2)} mm, or use option C (isolation foil/ceramic).`));
+  if (!tim.iso && cfg.Vdc >= 600) note('info', 'For 800 V-class systems Infineon presents gap filler + isolation foil or ceramic plate (option C) as the guaranteed-isolation, highest-safety Q-DPAK assembly.');
+  if (!tim.iso && cfg.timE <= 0) note('bad', 'Gap material is not credited for isolation (grease) and no isolation layer is fitted.');
+  if (cfg.alt > 2000) note('info', `Altitude ${cfg.alt} m: IEC 60664-1 clearance factor ×${tim.kAlt.toFixed(2)}; partial-discharge inception falls with pressure — PD-test the TIM stack at minimum pressure.`);
+  if (tim.Ework > 3) note('warn', `Working field ${tim.Ework.toFixed(1)} kV/mm across the insulation at ${cfg.Vdc} V — high for long-term PD-free operation; check the supplier's continuous rating.`);
   if (Math.abs(map.balance) > 0.01) note('info', `2-D map energy balance error ${(map.balance * 100).toFixed(2)} % (increase grid or iterations).`);
   return R;
 }
@@ -621,7 +685,7 @@ function losses(h, perLeg, nLegs) {
 }
 
 const API = { air, geometry, core, bypassDP, fanDP, fanQfree, systemAt, operatingPoint, heatTransfer, finEff, natural,
-  leeSpreading, devices, flowWeights, solveMap, jacobiEig, cauerToFoster, Zf, compute, evalPoint, losses,
-  MATERIALS, TIMS, FANS, CFM, RHO_REF, SIGMA };
+  leeSpreading, devices, nParOf, timStack, altFactor, flowWeights, solveMap, jacobiEig, cauerToFoster, Zf, compute, evalPoint, losses,
+  MATERIALS, TIMS, ISOS, FANS, CFM, RHO_REF, SIGMA };
 if (typeof module !== 'undefined' && module.exports) module.exports = API; else root.HS = API;
 })(this);

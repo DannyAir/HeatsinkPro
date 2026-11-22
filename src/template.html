@@ -51,7 +51,7 @@ button.primary { background: var(--accent); color: #fff; border-color: var(--acc
 .actions { display: flex; flex-wrap: wrap; gap: 6px; }
 
 /* KPI strip */
-.kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 8px; padding: 0 16px; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 8px; padding: 0 16px; }
 .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px 9px 13px; position: relative; overflow: hidden; }
 .kpi::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--line); }
 .kpi.ok::before { background: var(--ok); } .kpi.warn::before { background: var(--warn); } .kpi.bad::before { background: var(--bad); }
@@ -170,8 +170,8 @@ td.hot { color: var(--bad); font-weight: 600; }
 <body>
 <header class="top">
   <div class="brand">
-    <h1>QDPAK Inverter Heatsink Study <span class="rev">r1</span></h1>
-    <div class="sub" id="subline">3-phase · 3 legs × 4 top-side-cooled QDPAK · forced-air fin array</div>
+    <h1>QDPAK Inverter Heatsink Study <span class="rev">r2</span></h1>
+    <div class="sub" id="subline">3-leg inverter · 6 switches × 4∥ top-side-cooled QDPAK = 24 dies · 800 V</div>
   </div>
   <div class="actions">
     <button id="btnSummary" type="button">Copy summary</button>
@@ -205,6 +205,7 @@ td.hot { color: var(--bad); font-weight: 600; }
         </div>
         <div class="card"><h2>Per-device temperatures at x</h2><div class="scroll-x" id="devTable"></div></div>
         <div class="card"><h2>Thermal resistance stack</h2><div class="cap">Per device, junction → inlet air. Bars in K/W, labels in K at x.</div><canvas id="cvStack"></canvas><div class="legend" id="stackLeg"></div></div>
+        <div class="card" style="grid-column:1/-1"><h2>Thermal pad and isolation stack (hottest die)</h2><div class="cap">Drain pad is at drain potential: only layers credited with a dielectric strength count toward the withstand.</div><div class="scroll-x" id="timTable"></div></div>
         <div class="card"><h2>Flow distribution across width</h2><div class="cap">Relative channel velocity w(y) from fan coverage, hub shadow and gap. Local h ∝ w<sup>m</sup>.</div><canvas id="cvWeights"></canvas></div>
         <div class="card"><h2>Front section</h2><div class="cap">Looking along the airflow. Fan frames dashed.</div><canvas id="cvFront"></canvas></div>
       </div>

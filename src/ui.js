@@ -1,13 +1,21 @@
-/* QDPAK heatsink study — UI (rev r1) */
+/* QDPAK heatsink study — UI (rev r2) */
 (function () {
 'use strict';
 const HS = window.HS, DEF = window.HS_DEFAULTS, CFM = HS.CFM;
-const KEY = 'qdpak-hs-study-r1';
+const KEY = 'qdpak-hs-study-r2';
 const $ = s => document.querySelector(s);
-let cfg = Object.assign({}, DEF, loadCfg() || {});
+let cfg = Object.assign({}, DEF, normalize(loadCfg() || {}));
 let R = null, view = 'map', sweepDirty = true;
 const helper = { Irms: 150, Vdc: 800, fsw: 20, Rds: 20, Esw: 2.0, Vref: 800, Iref: 100 };
 
+/* map older (r1) configs onto r2 keys */
+function normalize(o) {
+  o = Object.assign({}, o);
+  if (o.perLeg != null && o.nPar == null) o.nPar = Math.max(1, Math.round(o.perLeg / 2));
+  if (o.timT != null && o.timMode == null) { o.timMode = 'A'; o.timTmin = o.timT; o.timDh = 0; }
+  delete o.perLeg; delete o.timT;
+  return o;
+}
 function loadCfg() { try { const s = localStorage.getItem(KEY); return s ? JSON.parse(s) : null; } catch (e) { return null; } }
 function saveCfg() { try { localStorage.setItem(KEY, JSON.stringify(cfg)); } catch (e) { /* storage unavailable */ } }
 
@@ -49,28 +57,42 @@ const SCHEMA = [
     { k: 'TjMax', l: 'Absolute Tj,max', u: '°C', st: 1 },
     { t: 'helper' } ] },
   { sec: 'Devices & layout', f: [
-    { k: 'nLegs', l: 'Legs', u: '', st: 1, min: 1, max: 3 },
-    { k: 'perLeg', l: 'QDPAK per leg', t: 'sel', half: true, num: true, o: [[2, '2 (1 HS + 1 LS)'], [4, '4 (2∥ HS + 2∥ LS)'], [6, '6 (3∥ + 3∥)'], [8, '8 (4∥ + 4∥)']] },
+    { k: 'nLegs', l: 'Legs (phases)', u: '', st: 1, min: 1, max: 3 },
+    { k: 'nPar', l: 'QDPAK ∥ per switch', t: 'sel', half: true, num: true, o: [[1, '1'], [2, '2'], [3, '3'], [4, '4'], [5, '5'], [6, '6']] },
     { k: 'Rjc', l: 'R_th,jc (top)', u: 'K/W', st: 0.01 },
     { k: 'Ccase', l: 'Case node C', u: 'J/K', st: 0.05, h: 'Package lump outside Z_jc' },
     { k: 'padL', l: 'Exposed pad, long', u: 'mm', st: 0.5 },
     { k: 'padW', l: 'Exposed pad, short', u: 'mm', st: 0.5 },
     { k: 'pkgL', l: 'Package body, long', u: 'mm', st: 0.5 },
     { k: 'pkgW', l: 'Package body, short', u: 'mm', st: 0.5 },
-    { k: 'layout', l: 'Leg orientation', t: 'sel', o: [['along', 'Legs along airflow (devices in series)'], ['across', 'Legs across airflow (leg A upstream)']] },
-    { k: 'pitchDev', l: 'Device pitch in leg', u: 'mm', st: 1 },
-    { k: 'pitchLeg', l: 'Leg pitch', u: 'mm', st: 1 },
+    { k: 'layout', l: 'Device arrangement', t: 'sel', o: [['posRows', 'Switch rows along airflow (A-HS, A-LS … stacked across W)'], ['posCols', 'Switch rows across airflow (positions in series along L)'], ['along', 'Leg rows along airflow (HS∥ then LS∥ in one row)'], ['across', 'Leg rows across airflow']] },
+    { k: 'pitchDev', l: 'Device pitch in a row', u: 'mm', st: 1 },
+    { k: 'pitchLeg', l: 'Row pitch', u: 'mm', st: 1 },
+    { k: 'legGap', l: 'Extra gap between legs', u: 'mm', st: 1, show: c => c.layout === 'posRows' || c.layout === 'posCols' },
     { k: 'offX', l: 'Group offset, flow', u: 'mm', st: 1 },
     { k: 'offY', l: 'Group offset, width', u: 'mm', st: 1 },
     { k: 'rotate', l: 'Rotate packages 90°', t: 'chk' },
     { k: 'pcbOn', l: 'Include PCB heat path (leads → board)', t: 'chk' },
     { k: 'Rpcb', l: 'R case → ambient via PCB', u: 'K/W', st: 1, show: c => c.pcbOn },
     { t: 'foster' } ] },
-  { sec: 'Thermal interface', f: [
-    { k: 'timPreset', l: 'Material', t: 'sel', o: Object.keys(HS.TIMS).map(k => [k, k]) },
-    { k: 'timK', l: 'k_TIM', u: 'W/m·K', st: 0.5 },
-    { k: 'timT', l: 'Bond-line thickness', u: 'mm', st: 0.05, h: 'After compression, incl. height tolerance' },
-    { k: 'timRc', l: 'Contact R″ (both faces)', u: 'K·mm²/W', st: 1 } ] },
+  { sec: 'Thermal interface & isolation', open: true, f: [
+    { k: 'timMode', l: 'Assembly (drain pad is live)', t: 'sel', o: [['C', 'C · Gap filler + isolation foil / ceramic (guaranteed isolation)'], ['A', 'A · Insulating gap filler only'], ['B', 'B · Insulating gap pad']] },
+    { k: 'timPreset', l: 'Gap material', t: 'sel', o: Object.keys(HS.TIMS).map(k => [k, k]), h: 'Class values — confirm on the supplier datasheet' },
+    { k: 'timK', l: 'k gap', u: 'W/m·K', st: 0.5 },
+    { k: 'timE', l: 'Dielectric strength', u: 'kV/mm', st: 0.5, h: '0 = not credited for isolation' },
+    { k: 'timEr', l: 'Permittivity ε_r gap', u: '', st: 0.1 },
+    { k: 'timTmin', l: 'Min bond line (highest die)', u: 'mm', st: 0.05 },
+    { k: 'timDh', l: 'Height tolerance absorbed Δh', u: 'mm', st: 0.05, h: 'Package ±50 µm, solder, PCB warp, heatsink flatness' },
+    { k: 'timCase', l: 'Bond line used for thermal', t: 'sel', o: [['worst', 'Worst: t_min + Δh on every die'], ['nominal', 'Mean: t_min + Δh/2']] },
+    { k: 'isoPreset', l: 'Isolation layer', t: 'sel', show: c => c.timMode === 'C', o: Object.keys(HS.ISOS).map(k => [k, k]) },
+    { k: 'isoK', l: 'k isolation', u: 'W/m·K', st: 1, show: c => c.timMode === 'C' },
+    { k: 'isoT', l: 'Isolation thickness', u: 'mm', st: 0.01, show: c => c.timMode === 'C' },
+    { k: 'isoE', l: 'Isolation strength', u: 'kV/mm', st: 1, show: c => c.timMode === 'C' },
+    { k: 'isoEr', l: 'Permittivity ε_r iso', u: '', st: 0.1, show: c => c.timMode === 'C' },
+    { k: 'timRc', l: 'Contact R″ (all faces)', u: 'K·mm²/W', st: 1 },
+    { k: 'Vdc', l: 'DC-link voltage', u: 'V', st: 10 },
+    { k: 'Vreq', l: 'Required withstand', u: 'kV', st: 0.1, h: 'From your insulation coordination / hipot spec' },
+    { k: 'dvdt', l: 'Switch-node dv/dt', u: 'V/ns', st: 5 } ] },
   { sec: 'Heatsink', f: [
     { k: 'hsType', l: 'Fin shape', t: 'sel', o: [['plate', 'Straight plate fins'], ['pinIn', 'Round pins, in-line'], ['pinSt', 'Round pins, staggered']] },
     { k: 'L', l: 'Length L (along flow)', u: 'mm', st: 5 },
@@ -166,25 +188,36 @@ function helperEl() {
     <div class="row"><button type="button" id="h_x">Use as x</button><button type="button" id="h_y">Use as y</button></div></div>`;
   setTimeout(() => {
     Object.keys(helper).forEach(k => d.querySelector('#h_' + k).addEventListener('input', e => { const v = parseFloat(e.target.value); if (isFinite(v)) { helper[k] = v; helperOut(); } }));
-    d.querySelector('#h_x').addEventListener('click', () => { cfg.Px = Math.round(HS.losses(helper, cfg.perLeg, cfg.nLegs).Ptot); syncForm(); schedule(); toast('x updated'); });
-    d.querySelector('#h_y').addEventListener('click', () => { cfg.Py = Math.round(HS.losses(helper, cfg.perLeg, cfg.nLegs).Ptot); syncForm(); schedule(); toast('y updated'); });
+    d.querySelector('#h_x').addEventListener('click', () => { cfg.Px = Math.round(HS.losses(helper, 2 * cfg.nPar, cfg.nLegs).Ptot); syncForm(); schedule(); toast('x updated'); });
+    d.querySelector('#h_y').addEventListener('click', () => { cfg.Py = Math.round(HS.losses(helper, 2 * cfg.nPar, cfg.nLegs).Ptot); syncForm(); schedule(); toast('y updated'); });
     helperOut();
   }, 0);
   return d;
 }
 function helperOut() {
-  const o = HS.losses(helper, cfg.perLeg, cfg.nLegs), el = $('#h_out'); if (!el) return;
+  const o = HS.losses(helper, 2 * cfg.nPar, cfg.nLegs), el = $('#h_out'); if (!el) return;
   el.textContent = `per die: P_c ${fmt(o.Pc, 1)} W + P_sw ${fmt(o.Psw, 1)} W = ${fmt(o.Pdev, 1)} W · N_p = ${o.Np} · total ${fmt(o.Ptot, 0)} W`;
 }
 function setField(fd, v) {
   const old = cfg[fd.k]; cfg[fd.k] = v;
-  if (fd.k === 'timPreset' && HS.TIMS[v]) { cfg.timK = HS.TIMS[v].k; cfg.timT = HS.TIMS[v].t; }
-  if (fd.k === 'timK' || fd.k === 'timT') { const m = Object.keys(HS.TIMS).find(k => HS.TIMS[k] && HS.TIMS[k].k === cfg.timK && HS.TIMS[k].t === cfg.timT); cfg.timPreset = m || 'Custom'; }
+  if (fd.k === 'timPreset' && HS.TIMS[v]) { const m = HS.TIMS[v]; cfg.timK = m.k; cfg.timE = m.E; cfg.timEr = m.er; }
+  if (['timK', 'timE', 'timEr'].includes(fd.k)) cfg.timPreset = 'Custom';
+  if (fd.k === 'isoPreset' && HS.ISOS[v]) { const m = HS.ISOS[v]; cfg.isoK = m.k; cfg.isoT = m.t; cfg.isoE = m.E; cfg.isoEr = m.er; }
+  if (['isoK', 'isoT', 'isoE', 'isoEr'].includes(fd.k)) cfg.isoPreset = 'Custom';
+  if (fd.k === 'timMode') {
+    if (v === 'C') cfg.timTmin = 0;
+    else {
+      if (v === 'B') { const m = HS.TIMS['Ultrasoft gap pad 5 W/m·K, insulating']; cfg.timPreset = 'Ultrasoft gap pad 5 W/m·K, insulating'; cfg.timK = m.k; cfg.timE = m.E; cfg.timEr = m.er; }
+      if (!(cfg.timE > 0)) { const m = HS.TIMS['Gap filler 6 W/m·K, insulating']; cfg.timPreset = 'Gap filler 6 W/m·K, insulating'; cfg.timK = m.k; cfg.timE = m.E; cfg.timEr = m.er; }
+      const need = Math.ceil(cfg.Vreq / cfg.timE * 20 - 1e-9) / 20;
+      cfg.timTmin = Math.max(need, v === 'B' ? 1.0 : 0);
+    }
+  }
   if (fd.k === 'fanPreset' && HS.FANS[v]) { const f = HS.FANS[v]; cfg.fanD = f.D; cfg.fanQmax = f.Qmax; cfg.fanPmax = f.Pmax; cfg.fanShape = f.n; cfg.fanPel = f.Pel; }
   if (FAN_KEYS.includes(fd.k)) cfg.fanPreset = 'Custom';
   ['B', 'F'].forEach(w => { if (fd.k === 'mat' + w && v === 'Custom' && HS.MATERIALS[old]) { const m = HS.MATERIALS[old]; cfg['k' + w] = m.k; cfg['rho' + w] = m.rho; cfg['cp' + w] = m.cp; } });
   if (fd.k === 'fanMode' && v === 'impinge' && cfg.fanX <= 0) cfg.fanX = cfg.L / 2;
-  if (fd.k === 'perLeg' || fd.k === 'nLegs') helperOut();
+  if (fd.k === 'nPar' || fd.k === 'nLegs') helperOut();
   syncForm(); schedule();
 }
 function syncForm() {
@@ -218,7 +251,7 @@ function recompute() {
 function stat(T) { return T > cfg.Tlim ? 'bad' : T > cfg.Tlim - 10 ? 'warn' : 'ok'; }
 function renderSummary() {
   const c = cfg;
-  $('#subline').textContent = `3-phase · ${c.nLegs} leg${c.nLegs > 1 ? 's' : ''} × ${c.perLeg} top-side-cooled QDPAK · ${c.fanMode === 'natural' ? 'natural convection' : c.fanMode + ' fans'} · ${c.Tamb} °C at ${c.alt} m`;
+  $('#subline').textContent = `${c.nLegs}-leg inverter · ${2 * c.nLegs} switches × ${c.nPar}∥ top-side-cooled QDPAK = ${2 * c.nLegs * c.nPar} dies · ${c.Vdc} V · TIM option ${c.timMode} · ${c.fanMode === 'natural' ? 'natural convection' : c.fanMode + ' fans'} · ${c.Tamb} °C at ${c.alt} m`;
   if (!R || R.invalid) {
     $('#kpis').innerHTML = '';
     $('#alerts').innerHTML = `<div class="alert bad"><span class="pill bad">GEOMETRY</span><span>${R ? R.g.why : 'No result'} — adjust the heatsink inputs.</span></div>`;
@@ -234,6 +267,7 @@ function renderSummary() {
     op ? { t: 'Airflow', v: fmt(op.Qfan / CFM, 1) + ' CFM', c: op.fanFrac < 0.35 ? 'warn' : '', s: `${fmt(op.dpFan, 0)} Pa · ${fmt(op.fanFrac * 100, 0)} % of free flow` }
        : { t: 'Airflow', v: 'natural', c: '', s: `h ${fmt(R.natRes.h, 1)} + h_rad ${fmt(R.natRes.hr, 1)} W/m²K` },
     { t: 'Mass · fan power', v: fmt(R.g.mass * 1e3, 0) + ' g', c: '', s: `fans ${fmt(R.fanPel, 1)} W · C_hs ${fmt(R.g.Chs, 0)} J/K` },
+    { t: `Isolation at ${c.Vdc} V`, v: fmt(R.tim.Vbd, 1) + ' kV', c: R.tim.Vbd >= c.Vreq * (1 - 1e-9) ? 'ok' : 'bad', s: `need ${c.Vreq} kV · ${fmt(R.tim.Cdev * 1e12, 0)} pF/die · i_cm ${fmt(R.tim.icmPhase, 1)} A/phase` },
     R.fail ? { t: 'Fan failure at x', v: tfmt(R.fail.tFail), c: R.fail.tFail > 60 ? 'ok' : R.fail.tFail > 15 ? 'warn' : 'bad', s: `to ${c.Tlim} °C · τ ${tfmt(R.fail.tau)}` }
            : { t: 'Passive design', v: '—', c: '', s: 'no fan to fail' }
   ];
@@ -481,7 +515,7 @@ function drawTop(cv, mode) {
 /* ---------------- front section ---------------- */
 function drawFront(cv) {
   const g = R.g, c = cfg, mm = 1e-3;
-  const tP = 1.6 * mm, tD = 2.3 * mm, tT = c.timT * mm, z0b = tP + tD + tT, z1b = z0b + g.tb, zf = z1b + g.H;
+  const tim = R.tim, tP = 1.6 * mm, tD = 2.3 * mm, tGap = tim.tEval, tIso = tim.tIso, z0b = tP + tD + tGap + tIso, z1b = z0b + g.tb, zf = z1b + g.H;
   const ct = (!c.shroud && c.fanMode !== 'impinge' && c.fanMode !== 'natural') ? c.cTip * mm : 0;
   const D = c.fanD * mm, zc = z0b + (g.tb + g.H) / 2;
   let zmin = 0, zmax = zf + ct + 2 * mm;
@@ -498,7 +532,8 @@ function drawFront(cv) {
   const rect = (y0, z0, y1, z1, fill, alpha = 1) => { ctx.globalAlpha = alpha; ctx.fillStyle = fill; ctx.fillRect(Xy(y0), Zz(z1), (y1 - y0) * sc, (z1 - z0) * sc); ctx.globalAlpha = 1; };
   rect(ymin, 0, ymax, tP, css('--c4'), .55);
   const ys = [...new Map(R.devs.map(d => [Math.round(d.y * 1e5), d])).values()];
-  ys.forEach(d => { rect(d.y - d.py / 2, tP, d.y + d.py / 2, tP + tD, ink, .8); rect(d.y - d.ay / 2, tP + tD - 0.3 * mm, d.y + d.ay / 2, tP + tD, acc, 1); rect(d.y - d.ay / 2, tP + tD, d.y + d.ay / 2, z0b, air, .55); });
+  ys.forEach(d => { rect(d.y - d.py / 2, tP, d.y + d.py / 2, tP + tD, ink, .8); rect(d.y - d.ay / 2, tP + tD - 0.3 * mm, d.y + d.ay / 2, tP + tD, acc, 1); rect(d.y - d.ay / 2, tP + tD, d.y + d.ay / 2, tP + tD + tGap, air, .55); });
+  if (tIso > 0) { const span = ys.reduce((a, d) => [Math.min(a[0], d.y - d.py / 2 - 2 * mm), Math.max(a[1], d.y + d.py / 2 + 2 * mm)], [1, -1]); rect(Math.max(span[0], 0), tP + tD + tGap, Math.min(span[1], g.W), z0b, css('--c3'), .75); }
   const metal = css('--muted');
   rect(0, z0b, g.W, z1b, metal, .55);
   if (g.type === 'plate') for (let i = 0; i < g.N; i++) { const y = i * (g.tf + g.s); rect(y, z1b, y + g.tf, zf, metal, .55); }
@@ -514,7 +549,7 @@ function drawFront(cv) {
     for (let i = 0; i < c.fanN; i++) { const yc = g.W * (i + 0.5) / c.fanN + c.fanOffY * mm, zb = zf + c.fanGap * mm; ctx.globalAlpha = .25; ctx.fillStyle = air; ctx.fillRect(Xy(yc - D / 2), Zz(zb + 25 * mm), D * sc, 25 * mm * sc); ctx.globalAlpha = 1; ctx.strokeStyle = air; ctx.strokeRect(Xy(yc - D / 2), Zz(zb + 25 * mm), D * sc, 25 * mm * sc); }
   }
   ctx.font = FONT; ctx.fillStyle = muted; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
-  const cap = `PCB · QDPAK · TIM ${c.timT} mm · base ${c.tb} mm · fins H ${c.H} mm${g.type === 'plate' ? ` · s ${fmt(g.s * 1e3, 2)} mm` : ` · D ${c.pinD} mm`}`;
+  const cap = `PCB · QDPAK · gap ${fmt(tGap * 1e3, 2)} mm${tIso > 0 ? ` · isolation ${c.isoT} mm` : ''} · base ${c.tb} mm · fins H ${c.H} mm${g.type === 'plate' ? ` · s ${fmt(g.s * 1e3, 2)} mm` : ` · D ${c.pinD} mm`}`;
   if (ctx.measureText(cap).width > w - M.l - M.r) { const parts = cap.split(' · '), half = Math.ceil(parts.length / 2); ctx.fillText(parts.slice(0, half).join(' · '), M.l, h - M.b + 4); ctx.fillText(parts.slice(half).join(' · '), M.l, h - M.b + 18); }
   else ctx.fillText(cap, M.l, h - M.b + 8);
 }
@@ -539,12 +574,29 @@ function renderMap() {
       { v: st.Rjc, c: C.jc, t: fmt(st.Rjc * P, 1) }, { v: st.Rtim, c: C.tim, t: fmt(st.Rtim * P, 1) }, { v: st.sp.RspAvg, c: C.sp, t: fmt(st.sp.RspAvg * P, 1) },
       { v: st.sp.R1D, c: C.d1, t: '' }, { v: st.RconvShare, c: C.cv, t: fmt(st.RconvShare * P, 1) }, { v: st.RcalShare, c: C.cal, t: fmt(st.RcalShare * P, 1) }] }
   ], { scale: v => fmt(v, 2) + ' K/W' });
-  $('#stackLeg').innerHTML = legendHTML([[C.jc, 'R_jc'], [C.tim, 'R_TIM'], [C.sp, 'spreading (R_sp / R_v)'], [C.d1, 'R_1D base'], [C.cv, 'convection (map: base+fins+air)'], [C.cal, 'air heating (caloric)']]);
+  $('#stackLeg').innerHTML = legendHTML([[C.jc, 'R_jc'], [C.tim, 'R_TIM (gap + isolation + contact)'], [C.sp, 'spreading (R_sp / R_v)'], [C.d1, 'R_1D base'], [C.cv, 'convection (map: base+fins+air)'], [C.cal, 'air heating (caloric)']]);
   const ny = m.ny, yy = [], ww = [];
   for (let j = 0; j < ny; j++) { yy.push((j + 0.5) / ny * cfg.W); ww.push(m.wY[j]); }
   const vl = cfg.fanMode === 'natural' ? [] : Array.from({ length: cfg.fanN }, (_, i) => ({ x: cfg.W * (i + 0.5) / cfg.fanN + cfg.fanOffY, label: 'fan ' + (i + 1), c: css('--air') }));
   lineChart($('#cvWeights'), { h: 190, series: [{ x: yy, y: ww, c: css('--air'), fill: true }], vl, xl: 'position across width y (mm)', yl: 'w(y)', ymin: 0, xmin: 0, xmax: cfg.W, yfmt: v => v.toFixed(1) });
   drawFront($('#cvFront'));
+  renderTimCard();
+}
+function renderTimCard() {
+  const t = R.tim, c = cfg, P = R.hot.Ptop, A = R.stack.Apad;
+  const rows = [['Gap ' + (c.timMode === 'B' ? 'pad' : 'filler'), `${fmt(t.tEval * 1e3, 2)} (${fmt(t.tmin * 1e3, 2)}…${fmt(t.tMax * 1e3, 2)})`, c.timK, t.Rparts.gap, c.timE > 0 ? fmt(t.Vgap, 2) : 'not credited', c.timEr]];
+  if (t.iso) rows.push(['Isolation · ' + c.isoPreset, fmt(t.tIso * 1e3, 2), c.isoK, t.Rparts.iso, fmt(t.Viso, 2), c.isoEr]);
+  rows.push(['Contact R″ (all faces)', '—', '—', t.Rparts.c, '—', '—']);
+  let h = `<table><thead><tr><th>Layer</th><th class="n">t (mm)</th><th class="n">k</th><th class="n">R (K/W)</th><th class="n">ΔT (K)</th><th class="n">V_bd (kV)</th><th class="n">ε_r</th></tr></thead><tbody>`;
+  rows.forEach(r => { h += `<tr><td>${r[0]}</td><td class="n">${r[1]}</td><td class="n">${r[2]}</td><td class="n">${fmt(r[3], 3)}</td><td class="n">${fmt(r[3] * P, 1)}</td><td class="n">${r[4]}</td><td class="n">${r[5]}</td></tr>`; });
+  h += `<tr><td><b>Stack</b></td><td class="n">${fmt((t.tEval + t.tIso) * 1e3, 2)}</td><td></td><td class="n"><b>${fmt(t.R, 3)}</b></td><td class="n"><b>${fmt(t.R * P, 1)}</b></td><td class="n"><b>${fmt(t.Vbd, 2)}</b></td><td></td></tr></tbody></table>`;
+  const ok = t.Vbd >= c.Vreq * (1 - 1e-9);
+  $('#timTable').innerHTML = h + `<div class="kv" style="margin-top:8px">${kv([
+    ['Withstand vs required', `${fmt(t.Vbd, 2)} / ${c.Vreq} kV ${ok ? '✓' : '✗'}`], ['Margin', fmt(t.margin, 2) + ' ×'],
+    ['Working field at V_dc', fmt(t.Ework, 2) + ' kV/mm'], ['Pad area A_pad', fmt(A * 1e6, 0) + ' mm²'],
+    ['C drain → heatsink', fmt(t.Cdev * 1e12, 1) + ' pF/die'], [`i_cm per phase (${c.nPar} LS dies)`, fmt(t.icmPhase, 2) + ' A @ ' + c.dvdt + ' V/ns'],
+    ['Total C on switch nodes', fmt(t.Cdev * 1e12 * c.nPar * c.nLegs, 0) + ' pF'], ['Altitude clearance factor', '×' + fmt(t.kAlt, 2)],
+    ...(t.iso ? [] : [['Min bond line for V_req', fmt(t.tReq, 2) + ' mm']])])}</div>`;
 }
 
 /* ---------------- flow view ---------------- */
@@ -639,7 +691,7 @@ function renderTransient() {
 
 /* ---------------- sweep ---------------- */
 const SWEEP = {
-  N: { l: 'Fin count N', a: 10, b: 50, int: true, ok: c => plate(c) && c.finBy !== 'gap' },
+  N: { l: 'Fin count N', a: 20, b: 70, int: true, ok: c => plate(c) && c.finBy !== 'gap' },
   finGap: { l: 'Fin gap s (mm)', a: 1.2, b: 8, ok: c => plate(c) && c.finBy === 'gap' },
   tf: { l: 'Fin thickness t_f (mm)', a: 0.5, b: 3, ok: plate },
   H: { l: 'Fin height H (mm)', a: 15, b: 70 },
@@ -654,9 +706,13 @@ const SWEEP = {
   fanOffY: { l: 'Fan row offset (mm)', a: -30, b: 30, ok: forced },
   fanX: { l: 'Impingement fan position (mm)', a: 20, b: 120, ok: imp },
   cTip: { l: 'Tip clearance (mm)', a: 0.5, b: 20, ok: c => ductModes(c) && !c.shroud },
-  timK: { l: 'TIM k (W/m·K)', a: 1, b: 12 },
-  timT: { l: 'TIM thickness (mm)', a: 0.1, b: 1.0 },
-  pitchDev: { l: 'Device pitch (mm)', a: 17, b: 45 },
+  timK: { l: 'Gap material k (W/m·K)', a: 1, b: 12 },
+  timDh: { l: 'Height tolerance Δh (mm)', a: 0, b: 0.6 },
+  timTmin: { l: 'Min bond line (mm)', a: 0, b: 1.5 },
+  isoT: { l: 'Isolation thickness (mm)', a: 0.1, b: 1.0, ok: c => c.timMode === 'C' },
+  isoK: { l: 'Isolation k (W/m·K)', a: 1, b: 180, ok: c => c.timMode === 'C' },
+  pitchDev: { l: 'Device pitch (mm)', a: 17, b: 50 },
+  pitchLeg: { l: 'Row pitch (mm)', a: 16, b: 40 },
   alt: { l: 'Altitude (m)', a: 0, b: 6000 },
   Tamb: { l: 'Ambient (°C)', a: -20, b: 70 },
   Px: { l: 'Continuous loss x (W)', a: 100, b: 1200 }
@@ -742,7 +798,7 @@ function renderEquations() {
     ['Air temperature rise', `Δ${I('T')}<sub>air</sub> = ${fr(I('P'), `${I('ṁ')}${I('c<sub>p</sub>')}`)}`, nat ? NA : `ΔT_air = ${fmt(R.dTair, 2)} K`],
     ['Impingement (fans on fin tips)', `Δ${I('p')}<sub>1</sub>(${I('Q')}<sub>1</sub>, ${I('x<sub>f</sub>')}) + ½${I('ρV')}<sub>1</sub><sup>2</sup> = Δ${I('p')}<sub>2</sub>(${I('Q')} − ${I('Q')}<sub>1</sub>, ${I('L')} − ${I('x<sub>f</sub>')}) + ½${I('ρV')}<sub>2</sub><sup>2</sup>, ${I('h')} × ${I('F')}<sub>imp</sub>`, c.fanMode === 'impinge' ? `Q₁ = ${fmt(ht.secs[0].Q / CFM, 1)} CFM, Q₂ = ${fmt(ht.secs[1].Q / CFM, 1)} CFM, F_imp = ${c.impEnh}` : 'inactive']] });
   G.push({ h: '6 · Device stack and spreading (Lee–Song–Au–Moran)', e: [
-    ['Thermal interface', `${I('R')}<sub>TIM</sub> = ${fr(`${I('t')}<sub>TIM</sub>/${I('k')}<sub>TIM</sub> + ${I('R')}″<sub>c</sub>`, `${I('A')}<sub>pad</sub>`)}`, `A_pad = ${fmt(st.Apad * 1e6, 0)} mm², R_TIM = ${fmt(st.Rtim, 4)} K/W`],
+    ['Thermal interface stack', `${I('R')}<sub>TIM</sub> = ${fr(`${I('t')}<sub>gap</sub>/${I('k')}<sub>gap</sub> + ${I('t')}<sub>iso</sub>/${I('k')}<sub>iso</sub> + ${I('R')}″<sub>c</sub>`, `${I('A')}<sub>pad</sub>`)}, ${I('t')}<sub>gap</sub> = ${I('t')}<sub>min</sub> + Δ${I('h')} (worst) or + Δ${I('h')}/2 (mean)`, `A_pad = ${fmt(st.Apad * 1e6, 0)} mm², t_gap = ${fmt(R.tim.tEval * 1e3, 2)} mm, R_TIM = ${fmt(st.Rtim, 4)} K/W`],
     ['Equivalent radii and parameters', `${I('a')} = ${sq(`${I('A')}<sub>pad</sub>/π`)}, ${I('b')} = ${sq(`${I('A')}<sub>cell</sub>/π`)}, ${I('ε')} = ${I('a')}/${I('b')}, ${I('τ')} = ${I('t<sub>b</sub>')}/${I('b')}, Bi = ${fr(`${I('h')}<sub>eff</sub>${I('b')}`, I('k<sub>b</sub>'))}`, `a = ${fmt(sp.a * 1e3, 2)} mm, b = ${fmt(sp.b * 1e3, 2)} mm, ε = ${fmt(sp.eps, 3)}, τ = ${fmt(sp.tau, 3)}, Bi = ${fmt(sp.Bi, 4)}`],
     ['Eigenvalue and Φ', `${I('λ<sub>c</sub>')} = π + ${fr('1', `${sq('π')}${I('ε')}`)}, ${I('Φ<sub>c</sub>')} = ${fr(`tanh(${I('λ<sub>c</sub>')}${I('τ')}) + ${I('λ<sub>c</sub>')}/Bi`, `1 + (${I('λ<sub>c</sub>')}/Bi) tanh(${I('λ<sub>c</sub>')}${I('τ')})`)}`, `λ_c = ${fmt(sp.lc, 3)}, Φ_c = ${fmt(sp.Phi, 4)}`],
     ['Spreading resistance (average source temperature)', `${I('ψ')}<sub>avg</sub> = ${fr(`${I('ε')}${I('τ')}`, sq('π'))} + ½(1 − ${I('ε')})<sup>3/2</sup>${I('Φ<sub>c</sub>')}, ${I('R')}<sub>sp</sub> = ${fr(`${I('ψ')}<sub>avg</sub>`, `${I('k<sub>b</sub>')}${I('a')}${sq('π')}`)} − ${I('R')}<sub>1D</sub>`, `ψ_avg = ${fmt(sp.psiAvg, 4)}, R_sp = ${fmt(sp.RspAvg, 4)} K/W (max-point ${fmt(sp.RspMax, 4)})`],
@@ -764,11 +820,19 @@ function renderEquations() {
     ['Pulse superposition', `${I('T<sub>j</sub>')}(${I('t')}) = ${I('T')}<sub>j,ss</sub>(${I('x')}) + Δ${I('P')}[${I('Z')}(${I('t')}) − ${I('Z')}(${I('t')} − ${I('t<sub>p</sub>')})u(${I('t')} − ${I('t<sub>p</sub>')})]`, `ΔP_hot = ${fmt(T.dP, 2)} W → T_peak = ${fmt(T.TpeakY, 1)} °C`],
     ['Allowed time and allowed peak', `${I('Z')}(${I('t')}<sub>allow</sub>) = ${fr(`${I('T')}<sub>lim</sub> − ${I('T')}<sub>j,ss</sub>`, `Δ${I('P')}`)}, ${I('y')}<sub>allow</sub> = ${fr(I('N'), `1 + ${I('δ')}`)}[${I('P')}<sub>hot,x</sub> + ${fr(`${I('T')}<sub>lim</sub> − ${I('T')}<sub>j,ss</sub>`, `${I('Z')}(${I('t<sub>p</sub>')})`)}]`, `t_allow = ${tfmt(T.tAllow)}, y_allow = ${fmt(T.yAllow, 0)} W`],
     ['Fan failure', `${I('T')}<sub>hs</sub>(${I('t')}) = ${I('T')}<sub>nat</sub> − (${I('T')}<sub>nat</sub> − ${I('T')}<sub>0</sub>)e<sup>−${I('t')}/${I('τ')}</sup>, ${I('τ')} = ${I('R')}<sub>nat</sub>${I('C')}<sub>hs</sub>`, F ? `τ = ${tfmt(F.tau)}, T_nat = ${fmt(F.Tnat, 0)} °C, t_fail = ${tfmt(F.tFail)}` : 'n/a']] });
+  const tm = R.tim;
+  G.push({ h: '6b · Isolation and EMI (live drain pad, ' + c.Vdc + ' V)', e: [
+    ['Withstand of credited layers (thinnest point)', `${I('V')}<sub>bd</sub> = ${I('E')}<sub>gap</sub>${I('t')}<sub>min</sub> + ${I('E')}<sub>iso</sub>${I('t')}<sub>iso</sub> ≥ ${I('V')}<sub>req</sub>`, `${fmt(tm.Vgap, 2)} + ${fmt(tm.Viso, 2)} = ${fmt(tm.Vbd, 2)} kV vs ${c.Vreq} kV (×${fmt(tm.margin, 2)})`],
+    ['Minimum bond line without isolation layer', `${I('t')}<sub>min,req</sub> = ${fr(`${I('V')}<sub>req</sub>`, `${I('E')}<sub>gap</sub>`)}`, tm.iso ? 'option C — isolation layer carries the voltage' : `${fmt(tm.tReq, 2)} mm`],
+    ['Working field', `${I('E')}<sub>w</sub> = ${fr(`${I('V')}<sub>dc</sub>`, `${I('t')}<sub>ins</sub>`)}`, `${fmt(tm.Ework, 2)} kV/mm`],
+    ['Drain-to-heatsink capacitance (series layers)', `${I('C')} = ${fr(`${I('ε')}<sub>0</sub>${I('A')}<sub>pad</sub>`, `${I('t')}<sub>min</sub>/${I('ε')}<sub>r,gap</sub> + ${I('t')}<sub>iso</sub>/${I('ε')}<sub>r,iso</sub>`)}`, `${fmt(tm.Cdev * 1e12, 1)} pF per die (parallel-plate, fringing ignored)`],
+    ['Common-mode current into the heatsink', `${I('i')}<sub>cm</sub> = ${I('N')}<sub>par</sub>${I('C')} ${fr(`d${I('v')}`, `d${I('t')}`)} (low-side drains = switch node)`, `${fmt(tm.icmPhase, 2)} A per phase at ${c.dvdt} V/ns`],
+    ['Altitude correction for clearances (IEC 60664-1 Table A.2)', `${I('d')}<sub>cl</sub>(${I('h')}) = ${I('k')}<sub>alt</sub>(${I('h')}) · ${I('d')}<sub>cl</sub>(2000 m)`, `k_alt = ${fmt(tm.kAlt, 2)} at ${c.alt} m`]] });
   const NR = nat ? R.natRes : (F ? F.nr : null);
   G.push({ h: '9 · Natural convection and radiation', e: [
     ['Vertical channel (Bar-Cohen & Rohsenow)', `Nu<sub>s</sub> = [${fr('576', 'El<sup>2</sup>')} + ${fr('2.873', sq('El'))}]<sup>−1/2</sup>, El = Ra<sub>s</sub>${fr(I('s'), I('L'))}, Ra<sub>s</sub> = ${fr(`${I('g')}${I('β')}Δ${I('T')}${I('s')}<sup>3</sup>`, `${I('ν')}${I('α')}`)}`, NR ? `Ra_s = ${sci(NR.Ra)}, El = ${sci(NR.El)}, h = ${fmt(NR.h, 2)} W/m²K` : '—'],
     ['Radiation from the envelope', `${I('h')}<sub>rad</sub> = ${I('ε')}${I('σ')}(${I('T<sub>s</sub>')}<sup>2</sup> + ${I('T<sub>a</sub>')}<sup>2</sup>)(${I('T<sub>s</sub>')} + ${I('T<sub>a</sub>')}), ${I('A')}<sub>env</sub> = ${I('LW')} + 2(${I('L')} + ${I('W')})(${I('H')} + ${I('t<sub>b</sub>')})`, NR ? `h_rad = ${fmt(NR.hr, 2)} W/m²K, A_env = ${fmt(NR.Aenv, 4)} m²` : '—']] });
-  const L = HS.losses(helper, c.perLeg, c.nLegs);
+  const L = HS.losses(helper, 2 * c.nPar, c.nLegs);
   G.push({ h: '10 · Mass, heat capacity and loss estimate', e: [
     ['Mass and heat capacity', `${I('m')} = ${I('ρ<sub>b</sub>')}${I('V')}<sub>base</sub> + ${I('ρ<sub>f</sub>')}${I('V')}<sub>fins</sub>, ${I('C')}<sub>hs</sub> = Σ${I('ρ')}${I('c<sub>p</sub>')}${I('V')}`, `m = ${fmt(g.mass * 1e3, 0)} g, C_hs = ${fmt(g.Chs, 0)} J/K`],
     ['Conduction loss per die (synchronous, SPWM)', `${I('P<sub>c</sub>')} = ½(${fr(`${I('I')}<sub>rms</sub>`, I('N<sub>p</sub>'))})<sup>2</sup>${I('R')}<sub>ds,on</sub>(${I('T<sub>j</sub>')})`, `P_c = ${fmt(L.Pc, 2)} W`],
@@ -784,7 +848,10 @@ function renderEquations() {
     <li>Transient: datasheet Z<sub>jc</sub> Foster in series with an exact Foster equivalent of the case-to-air Cauer ladder (standard approximation; slightly optimistic below ~10 ms where the package and TIM interact).</li>
     <li>Fan failure assumes all fans stop, fins vertical, no blockage by stalled fans; radiation from the outer envelope only.</li>
     <li>Air properties at mean bulk temperature; mass flow from density at the fan (pull fans handle hot, thinner air).</li>
-    <li>QDPAK package 15 × 21 × 2.3 mm, top exposed drain pad (electrically live): the TIM must insulate. Pad size default 16 × 12 mm — confirm on the package drawing.</li></ul></div>
+    <li>QDPAK package 15 × 21 × 2.3 mm, top exposed drain pad (electrically live): the TIM stack must insulate. Pad size default 16 × 12 mm — confirm on the package drawing.</li>
+    <li>Infineon's Q-DPAK guidance lists three assemblies: A gap filler only, B gap pad (both need guaranteed minimum thickness for isolation), C gap filler + isolation foil or ceramic plate, presented as guaranteed isolation and highest safety for 800 V systems. Typical TIM conductivity 5–8 W/m·K; with five Q-DPAKs the highest-to-lowest height difference was kept below 300 µm; about 100 N per package; package standoff 0…150 µm and drawing tolerance ±50 µm.</li>
+    <li>The ultrasoft gap pad or dispensed filler must fill the mould-compound groove that provides the package creepage (&gt; 4.75 mm).</li>
+    <li>Dielectric strengths in the presets are short-term class values at sea level; use the supplier's rated withstand and partial-discharge data at minimum operating pressure.</li></ul></div>
     <div class="eqgrp notes"><h2>References</h2><ul>
     <li>Teertstra, Yovanovich, Culham — Analytical forced convection modeling of plate-fin heat sinks, SEMI-THERM 1999.</li>
     <li>Muzychka, Yovanovich — Modeling friction factors in non-circular ducts for developing laminar flow, AIAA 1998.</li>
@@ -811,10 +878,10 @@ function openModal(title, text, apply) {
 function summaryMD() {
   const c = cfg, r = R; if (!r || r.invalid) return 'Invalid geometry';
   const g = r.g, T = r.trans, op = r.op;
-  return [`# QDPAK heatsink study — r1 summary`, ``,
-    `**Load** x = ${c.Px} W continuous, y = ${c.Py} W for ${c.tp} s · ${r.Ndev} devices · δ = ${c.imb} % · ${c.Tamb} °C at ${c.alt} m · limit ${c.Tlim} °C`,
+  return [`# QDPAK heatsink study — r2 summary`, ``,
+    `**Load** x = ${c.Px} W continuous, y = ${c.Py} W for ${c.tp} s · ${2 * c.nLegs} switches × ${c.nPar}∥ = ${r.Ndev} QDPAK · ${c.Vdc} V · δ = ${c.imb} % · ${c.Tamb} °C at ${c.alt} m · limit ${c.Tlim} °C`,
     `**Heatsink** ${g.type === 'plate' ? `plate fins N = ${g.N}, t_f = ${c.tf} mm, s = ${fmt(g.s * 1e3, 2)} mm` : `${g.stag ? 'staggered' : 'in-line'} pins D = ${c.pinD} mm, S_T = ${c.pinST}, S_L = ${c.pinSL} mm (${g.Np} pins)`}, L × W = ${c.L} × ${c.W} mm, base ${c.tb} mm, H = ${c.H} mm · ${g.mb.name}/${g.mf.name} · ${fmt(g.mass * 1e3, 0)} g`,
-    `**TIM** ${c.timT} mm @ ${c.timK} W/m·K + ${c.timRc} K·mm²/W → ${fmt(r.stack.Rtim, 3)} K/W`,
+    `**TIM** option ${c.timMode}: gap ${fmt(r.tim.tEval * 1e3, 2)} mm @ ${c.timK} W/m·K${r.tim.iso ? ` + ${c.isoPreset} (${c.isoT} mm @ ${c.isoK} W/m·K)` : ''} → ${fmt(r.stack.Rtim, 3)} K/W · withstand ${fmt(r.tim.Vbd, 2)} kV (need ${c.Vreq}) · ${fmt(r.tim.Cdev * 1e12, 0)} pF/die · i_cm ${fmt(r.tim.icmPhase, 1)} A/phase`,
     `**Air** ${c.fanMode}${op ? `, ${c.fanN} × ${c.fanPreset} @ ${c.fanSpeed} % → ${fmt(op.Qfan / CFM, 1)} CFM, ${fmt(op.dpFan, 0)} Pa, fans ${fmt(r.fanPel, 1)} W` : ''}`, ``,
     `| Result | Value |`, `|---|---|`,
     `| R_sa (to inlet air) | ${fmt(r.Rsa * 1e3, 1)} mK/W (need ≤ ${fmt(r.RsaReqX * 1e3, 0)}) |`,
@@ -839,7 +906,7 @@ function init() {
   $('#btnReset').addEventListener('click', () => { cfg = Object.assign({}, DEF); syncForm(); recompute(); toast('Defaults restored'); });
   $('#modalClose').addEventListener('click', () => $('#modal').classList.remove('open'));
   $('#modalCopy').addEventListener('click', () => { const t = $('#modalText'); t.select(); try { navigator.clipboard.writeText(t.value).then(() => toast('Copied')); } catch (e) { /* manual copy */ } });
-  $('#modalApply').addEventListener('click', () => { try { const o = JSON.parse($('#modalText').value); cfg = Object.assign({}, DEF, o); syncForm(); recompute(); $('#modal').classList.remove('open'); toast('Configuration loaded'); } catch (e) { $('#modalHint').textContent = 'Not valid JSON: ' + e.message; } });
+  $('#modalApply').addEventListener('click', () => { try { const o = JSON.parse($('#modalText').value); cfg = Object.assign({}, DEF, normalize(o)); syncForm(); recompute(); $('#modal').classList.remove('open'); toast('Configuration loaded'); } catch (e) { $('#modalHint').textContent = 'Not valid JSON: ' + e.message; } });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') $('#modal').classList.remove('open'); });
   let rt = null; window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(renderView, 150); });
   const mq = window.matchMedia('(prefers-color-scheme: dark)'); if (mq.addEventListener) mq.addEventListener('change', renderView);
