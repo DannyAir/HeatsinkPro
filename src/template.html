@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QDPAK Inverter Heatsink Study</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* Layout idea: engineering workbench — parameter rail on the left, result sheets on the right; phone = tabs. */
+:root {
+  --bg: #e9edf1; --surface: #ffffff; --surface-2: #f4f6f8; --ink: #15202b; --muted: #586674; --line: #d3dae1;
+  --accent: #a9541f; --air: #2b6c9e; --c3: #6d4fa8; --c4: #1f8a7d;
+  --ok: #1d7f47; --warn: #a86d0e; --bad: #b8322a;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e141a; --surface: #161f28; --surface-2: #1c2732; --ink: #e4ebf1; --muted: #93a2b0; --line: #2a3643;
+    --accent: #e3925e; --air: #6cb0e4; --c3: #b29ae0; --c4: #4fc2b2;
+    --ok: #4cc58a; --warn: #e2b24f; --bad: #f0705f; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e141a; --surface: #161f28; --surface-2: #1c2732; --ink: #e4ebf1; --muted: #93a2b0; --line: #2a3643;
+  --accent: #e3925e; --air: #6cb0e4; --c3: #b29ae0; --c4: #4fc2b2;
+  --ok: #4cc58a; --warn: #e2b24f; --bad: #f0705f; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.45 var(--f-body); -webkit-text-size-adjust: 100%; }
+h1, h2, h3 { font-family: var(--f-display); text-wrap: balance; margin: 0; letter-spacing: .01em; }
+h1 { font-size: 22px; font-weight: 700; }
+h2 { font-size: 17px; font-weight: 600; }
+h3 { font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+button { font: 500 13px var(--f-body); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 7px 11px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+:focus-visible { outline: 2px solid var(--air); outline-offset: 2px; }
+.num, td.n, .kv b { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+
+/* header */
+.top { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; padding: 14px 16px 10px; }
+.brand { display: flex; flex-direction: column; gap: 2px; }
+.brand .sub { color: var(--muted); font-size: 12.5px; }
+.brand .rev { font-family: var(--f-mono); font-size: 11px; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 5px; margin-left: 6px; vertical-align: 3px; }
+.actions { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* KPI strip */
+.kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 8px; padding: 0 16px; }
+.kpi { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px 9px 13px; position: relative; overflow: hidden; }
+.kpi::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--line); }
+.kpi.ok::before { background: var(--ok); } .kpi.warn::before { background: var(--warn); } .kpi.bad::before { background: var(--bad); }
+.kpi .t { font-size: 11.5px; color: var(--muted); }
+.kpi .v { font: 600 20px/1.2 var(--f-mono); font-variant-numeric: tabular-nums; margin-top: 2px; }
+.kpi .s { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
+.alerts { display: flex; flex-direction: column; gap: 5px; padding: 8px 16px 0; }
+.alert { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--muted); border-radius: 6px; padding: 6px 10px; }
+.alert.bad { border-left-color: var(--bad); } .alert.warn { border-left-color: var(--warn); } .alert.info { border-left-color: var(--air); }
+.pill { font: 600 10.5px var(--f-mono); padding: 1px 6px; border-radius: 10px; color: #fff; background: var(--muted); flex: none; margin-top: 1px; }
+.pill.bad { background: var(--bad); } .pill.warn { background: var(--warn); } .pill.info { background: var(--air); } .pill.ok { background: var(--ok); }
+
+/* tabs */
+.tabs { display: flex; gap: 4px; padding: 12px 16px 0; overflow-x: auto; position: sticky; top: 0; z-index: 5; background: var(--bg); }
+.tabs button { border-radius: 6px 6px 0 0; border-bottom: none; white-space: nowrap; background: transparent; color: var(--muted); }
+.tabs button[aria-selected="true"] { background: var(--surface); color: var(--ink); border-color: var(--line); box-shadow: inset 0 3px 0 var(--accent); }
+.tab-setup { display: none; }
+
+/* main grid */
+.layout { display: grid; grid-template-columns: minmax(330px, 390px) 1fr; gap: 0; padding: 0 16px 24px; align-items: start; }
+.setup { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; margin: 0 12px 0 0; position: sticky; top: 52px; max-height: calc(100vh - 64px); overflow: auto; }
+.views { min-width: 0; }
+.view { display: none; background: var(--surface); border: 1px solid var(--line); border-radius: 0 8px 8px 8px; padding: 14px; }
+.view.active { display: block; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+.card { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: var(--surface); min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.card .cap { font-size: 12px; color: var(--muted); }
+canvas { display: block; width: 100%; }
+.scroll-x { overflow-x: auto; }
+
+/* setup form */
+.setup .head { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+details.sec { border-bottom: 1px solid var(--line); }
+details.sec > summary { cursor: pointer; padding: 10px 12px; font: 600 14px var(--f-display); list-style: none; display: flex; justify-content: space-between; }
+details.sec > summary::after { content: "+"; color: var(--muted); font-family: var(--f-mono); }
+details.sec[open] > summary::after { content: "−"; }
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; padding: 2px 12px 12px; }
+.fld { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); min-width: 0; }
+.fld.wide, .fld.chk, .fld.sel { grid-column: 1 / -1; }
+.fld .lb { line-height: 1.25; }
+.fld .inp { display: flex; align-items: stretch; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-2); }
+.fld .inp:focus-within { border-color: var(--air); }
+.fld input[type=number] { width: 100%; min-width: 0; border: 0; background: transparent; color: var(--ink); font: 13px var(--f-mono); padding: 6px 7px; }
+.fld input[type=number]:focus { outline: none; }
+.fld .u { font: 11px var(--f-mono); color: var(--muted); padding: 7px 7px 0 0; white-space: nowrap; }
+.fld select { width: 100%; font: 13px var(--f-body); color: var(--ink); background: var(--surface-2); border: 1px solid var(--line); border-radius: 5px; padding: 6px 6px; }
+.fld.chk { flex-direction: row; align-items: center; gap: 8px; color: var(--ink); font-size: 13px; }
+.fld.chk input { width: 16px; height: 16px; accent-color: var(--accent); }
+.fld .hint { font-size: 11px; color: var(--muted); opacity: .9; }
+.fld[hidden] { display: none; }
+.subgrid { grid-column: 1 / -1; display: grid; grid-template-columns: auto 1fr 1fr; gap: 5px 8px; align-items: center; font-size: 12px; color: var(--muted); }
+.subgrid input { width: 100%; font: 12.5px var(--f-mono); color: var(--ink); background: var(--surface-2); border: 1px solid var(--line); border-radius: 5px; padding: 5px 6px; }
+.helper { grid-column: 1 / -1; border: 1px dashed var(--line); border-radius: 6px; padding: 8px; }
+.hgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; margin-top: 8px; }
+.helper .out { grid-column: 1 / -1; font: 12px var(--f-mono); color: var(--ink); }
+.helper .row { grid-column: 1 / -1; display: flex; gap: 6px; }
+
+/* tables / kv */
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+th, td { text-align: left; padding: 5px 7px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { font-weight: 600; color: var(--muted); font-size: 11.5px; }
+td.n, th.n { text-align: right; }
+td.hot { color: var(--bad); font-weight: 600; }
+.kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 4px 14px; font-size: 12.5px; }
+.kv div { display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px dotted var(--line); padding: 3px 0; }
+.kv span { color: var(--muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11.5px; color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.ctrls { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+.ctrls label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.ctrls select, .ctrls input { font: 13px var(--f-mono); color: var(--ink); background: var(--surface-2); border: 1px solid var(--line); border-radius: 5px; padding: 6px; }
+.ctrls input { width: 92px; }
+
+/* equations */
+.eqgrp { margin-bottom: 16px; }
+.eqgrp h2 { margin-bottom: 6px; }
+.eq { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 2px 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.eq .id { font: 600 12px var(--f-mono); color: var(--accent); padding-top: 2px; }
+.eq .nm { font-size: 12px; color: var(--muted); }
+.eq .fx { font: 15px/1.9 "Cambria Math", "STIX Two Math", "Times New Roman", serif; overflow-x: auto; white-space: nowrap; padding: 2px 0; }
+.eq .val { font: 12px var(--f-mono); color: var(--ink); background: var(--surface-2); border-radius: 4px; padding: 3px 7px; justify-self: start; white-space: normal; }
+.eq .id, .eq .nm, .eq .fx, .eq .val { grid-column: 2; } .eq .id { grid-column: 1; grid-row: 1 / span 3; }
+.fr { display: inline-flex; flex-direction: column; vertical-align: middle; text-align: center; margin: 0 2px; line-height: 1.25; }
+.fr > span:first-child { border-bottom: 1px solid currentColor; padding: 0 3px; }
+.fr > span:last-child { padding: 0 3px; }
+.sq { white-space: nowrap; } .sq > span { border-top: 1px solid currentColor; padding: 0 2px; }
+.notes { font-size: 13px; max-width: 80ch; } .notes li { margin-bottom: 4px; }
+
+/* modal */
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
+.modal.open { display: flex; }
+.modal .box { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px; width: min(640px, 100%); display: flex; flex-direction: column; gap: 10px; }
+.modal textarea { width: 100%; height: 260px; font: 12px var(--f-mono); color: var(--ink); background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+.modal .row { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 6px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 60; }
+.toast.show { opacity: 1; }
+.err { color: var(--bad); font-weight: 600; padding: 10px; }
+
+@media (max-width: 1000px) {
+  .layout { grid-template-columns: 1fr; }
+  .tab-setup { display: inline-block; }
+  .setup { display: none; position: static; max-height: none; margin: 0; border-radius: 0 8px 8px 8px; }
+  .setup.active { display: block; }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid2 { grid-template-columns: 1fr; }
+}
+@media (max-width: 420px) {
+  .top, .kpis, .alerts, .tabs, .layout { padding-left: 10px; padding-right: 10px; }
+  .view { padding: 10px; }
+  .kpi .v { font-size: 17px; }
+  .fields { grid-template-columns: 1fr 1fr; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <h1>QDPAK Inverter Heatsink Study <span class="rev">r1</span></h1>
+    <div class="sub" id="subline">3-phase · 3 legs × 4 top-side-cooled QDPAK · forced-air fin array</div>
+  </div>
+  <div class="actions">
+    <button id="btnSummary" type="button">Copy summary</button>
+    <button id="btnCfg" type="button">Copy config</button>
+    <button id="btnLoad" type="button">Load config</button>
+    <button id="btnReset" type="button">Reset defaults</button>
+  </div>
+</header>
+<section class="kpis" id="kpis" aria-label="Key results"></section>
+<section class="alerts" id="alerts" aria-label="Design checks"></section>
+<nav class="tabs" id="tabs" role="tablist">
+  <button type="button" class="tab-setup" data-v="setup">Setup</button>
+  <button type="button" data-v="map">Thermal map</button>
+  <button type="button" data-v="flow">Flow &amp; fans</button>
+  <button type="button" data-v="transient">Transient</button>
+  <button type="button" data-v="sweep">Sweep</button>
+  <button type="button" data-v="equations">Equations</button>
+</nav>
+<main class="layout">
+  <aside class="setup" id="v-setup" aria-label="Parameters">
+    <div class="head"><h2>Parameters</h2><span class="cap" id="calcTime"></span></div>
+    <div id="setupForm"></div>
+  </aside>
+  <div class="views">
+    <section class="view" id="v-map">
+      <div class="grid2">
+        <div class="card" style="grid-column:1/-1">
+          <h2>Base-plate temperature, top view</h2>
+          <div class="cap" id="mapCap"></div>
+          <canvas id="cvMap" aria-label="Heatsink base temperature map"></canvas>
+        </div>
+        <div class="card"><h2>Per-device temperatures at x</h2><div class="scroll-x" id="devTable"></div></div>
+        <div class="card"><h2>Thermal resistance stack</h2><div class="cap">Per device, junction → inlet air. Bars in K/W, labels in K at x.</div><canvas id="cvStack"></canvas><div class="legend" id="stackLeg"></div></div>
+        <div class="card"><h2>Flow distribution across width</h2><div class="cap">Relative channel velocity w(y) from fan coverage, hub shadow and gap. Local h ∝ w<sup>m</sup>.</div><canvas id="cvWeights"></canvas></div>
+        <div class="card"><h2>Front section</h2><div class="cap">Looking along the airflow. Fan frames dashed.</div><canvas id="cvFront"></canvas></div>
+      </div>
+    </section>
+    <section class="view" id="v-flow">
+      <div class="grid2">
+        <div class="card"><h2>Fan curve vs system impedance</h2><div class="cap" id="fanCap"></div><canvas id="cvFan"></canvas></div>
+        <div class="card"><h2>Layout and air path</h2><div class="cap">Fins, devices by leg (A/B/C), fans and flow direction to scale.</div><canvas id="cvTop"></canvas></div>
+        <div class="card"><h2>Pressure-drop breakdown</h2><canvas id="cvDp"></canvas><div class="legend" id="dpLeg"></div></div>
+        <div class="card"><h2>Flow and convection</h2><div class="kv" id="flowKV"></div></div>
+      </div>
+    </section>
+    <section class="view" id="v-transient">
+      <div class="grid2">
+        <div class="card" style="grid-column:1/-1"><h2>Peak-load pulse: x → y for t → x</h2><div class="cap" id="pulseCap"></div><canvas id="cvPulse"></canvas></div>
+        <div class="card"><h2>Transient impedance Z<sub>th</sub>(t), hottest device</h2><canvas id="cvZth"></canvas></div>
+        <div class="card"><h2>Fan failure at x</h2><div class="cap" id="failCap"></div><canvas id="cvFail"></canvas></div>
+        <div class="card"><h2>Peak capability</h2><canvas id="cvCap"></canvas><div class="cap">Allowed peak loss y versus pulse length t to reach the design limit from steady x.</div></div>
+        <div class="card"><h2>Foster network for circuit simulation</h2><div class="scroll-x" id="fosterTable"></div><div><button type="button" id="btnFoster">Copy Foster CSV</button></div></div>
+      </div>
+    </section>
+    <section class="view" id="v-sweep">
+      <div class="ctrls">
+        <label for="swK">Parameter<select id="swK"></select></label>
+        <label for="swA">From<input id="swA" type="number" step="any"></label>
+        <label for="swB">To<input id="swB" type="number" step="any"></label>
+        <label for="swN">Points<input id="swN" type="number" min="3" max="80" value="25"></label>
+        <button type="button" class="primary" id="swRun">Run sweep</button>
+      </div>
+      <div class="cap" id="swCap" style="margin:8px 0"></div>
+      <div class="grid2">
+        <div class="card"><h2>Junction temperature</h2><canvas id="cvSw1"></canvas></div>
+        <div class="card"><h2>Heatsink resistance R<sub>sa</sub></h2><canvas id="cvSw2"></canvas></div>
+        <div class="card"><h2>Airflow and fan pressure</h2><canvas id="cvSw3"></canvas></div>
+        <div class="card"><h2>Heatsink mass</h2><canvas id="cvSw4"></canvas></div>
+      </div>
+    </section>
+    <section class="view" id="v-equations"><div id="eqHost"></div></section>
+  </div>
+</main>
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+  <div class="box">
+    <h2 id="modalTitle">Configuration</h2>
+    <label for="modalText" class="cap" id="modalHint">Paste a configuration JSON and press Apply.</label>
+    <textarea id="modalText" spellcheck="false"></textarea>
+    <div class="row"><button type="button" id="modalCopy">Copy</button><button type="button" id="modalClose">Close</button><button type="button" class="primary" id="modalApply">Apply</button></div>
+  </div>
+</div>
+<div class="toast" id="toast" role="status"></div>
+<script>
+/*ENGINE*/
+</script>
+<script>
+/*DEFAULTS*/
+</script>
+<script>
+/*UI*/
+</script>
+</body>
+</html>
